@@ -34,9 +34,9 @@ defmodule Ortex.MixProject do
       {:rustler, "~> 0.27"},
       {:nx, "~> 0.6"},
       {:tokenizers, "~> 0.4", only: :dev},
-      {:ex_doc, "0.29.4", only: :dev, runtime: false},
-      {:exla, "~> 0.6", only: :dev},
-      {:torchx, "~> 0.6", only: :dev}
+      {:ex_doc, "0.29.4", only: :dev, runtime: false}
+      # {:exla, "~> 0.6", only: :dev},
+      # {:torchx, "~> 0.6", only: :dev}
     ]
   end
 

@@ -13,14 +13,16 @@ use crate::utils::{is_bool_input, map_opt_level};
 use std::convert::TryInto;
 use std::iter::zip;
 
-use ort::{Error, ExecutionProviderDispatch, Session};
-use rustler::resource::ResourceArc;
+use ort::execution_providers::ExecutionProviderDispatch;
+use ort::session::Session;
+use ort::Error;
 use rustler::Atom;
+use rustler::ResourceArc;
 
 /// Holds the model state which include onnxruntime session and environment. All
 /// are threadsafe so this can be called concurrently from the beam.
 pub struct OrtexModel {
-    pub session: ort::Session,
+    pub session: ort::session::Session,
 }
 
 // Since we're only using the session for inference and
@@ -63,7 +65,7 @@ pub fn show(
     for input in model.session.inputs.iter() {
         let name = input.name.to_string();
         let repr = format!("{:#?}", input.input_type);
-        let dims = Option::<&Vec<i64>>::cloned(input.input_type.tensor_dimensions());
+        let dims: Option<Vec<i64>> = input.input_type.tensor_shape().map(|s| s.to_vec());
         inputs.push((name, repr, dims));
     }
 
@@ -71,7 +73,7 @@ pub fn show(
     for output in model.session.outputs.iter() {
         let name = output.name.to_string();
         let repr = format!("{:#?}", output.output_type);
-        let dims = Option::<&Vec<i64>>::cloned(output.output_type.tensor_dimensions());
+        let dims: Option<Vec<i64>> = output.output_type.tensor_shape().map(|s| s.to_vec());
         outputs.push((name, repr, dims));
     }
 
@@ -85,9 +87,9 @@ pub fn run(
     inputs: Vec<ResourceArc<OrtexTensor>>,
 ) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Error> {
     // Grab the session and run a forward pass with it
-    let session: &ort::Session = &model.session;
+    let session: &ort::session::Session = &model.session;
 
-    let mut ortified_inputs: Vec<ort::SessionInputValue> = Vec::new();
+    let mut ortified_inputs: Vec<ort::session::SessionInputValue> = Vec::new();
 
     for (elixir_input, onnx_input) in zip(inputs, &session.inputs) {
         let derefed_input: &OrtexTensor = &elixir_input;
@@ -95,10 +97,10 @@ pub fn run(
             // this assumes that the boolean input isn't huge -- we're cloning it twice;
             // once below, once in the try_into()
             let boolified_input: &OrtexTensor = &derefed_input.clone().to_bool();
-            let v: ort::SessionInputValue = boolified_input.try_into()?;
+            let v: ort::session::SessionInputValue = boolified_input.try_into()?;
             ortified_inputs.push(v);
         } else {
-            let v: ort::SessionInputValue = derefed_input.try_into()?;
+            let v: ort::session::SessionInputValue = derefed_input.try_into()?;
             ortified_inputs.push(v);
         }
     }

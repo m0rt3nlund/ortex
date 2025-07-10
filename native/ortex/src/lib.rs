@@ -12,7 +12,7 @@ mod utils;
 use model::OrtexModel;
 use tensor::OrtexTensor;
 
-use rustler::resource::ResourceArc;
+use rustler::ResourceArc;
 use rustler::types::Binary;
 use rustler::{Atom, Env, NifResult, Term};
 
@@ -106,16 +106,6 @@ pub fn concatenate<'a>(
 
 rustler::init!(
     "Elixir.Ortex.Native",
-    [
-        run,
-        init,
-        from_binary,
-        to_binary,
-        show_session,
-        slice,
-        reshape,
-        concatenate
-    ],
     load = |env: Env, _| {
         rustler::resource!(OrtexModel, env);
         rustler::resource!(OrtexTensor, env);
