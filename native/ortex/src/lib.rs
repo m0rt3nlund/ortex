@@ -12,8 +12,8 @@ mod utils;
 use model::OrtexModel;
 use tensor::OrtexTensor;
 
-use rustler::ResourceArc;
 use rustler::types::Binary;
+use rustler::ResourceArc;
 use rustler::{Atom, Env, NifResult, Term};
 
 #[rustler::nif(schedule = "DirtyIo")]
@@ -106,7 +106,7 @@ pub fn concatenate<'a>(
 
 rustler::init!(
     "Elixir.Ortex.Native",
-    load = |env: Env, _| {
+    load = |env: Env, _term: Term| -> bool {
         rustler::resource!(OrtexModel, env);
         rustler::resource!(OrtexTensor, env);
         true

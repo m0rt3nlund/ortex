@@ -85,17 +85,16 @@ pub fn show(
 pub fn run(
     model: ResourceArc<OrtexModel>,
     inputs: Vec<ResourceArc<OrtexTensor>>,
-) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Error> {
-    // Grab the session and run a forward pass with it
-    let session: &ort::session::Session = &model.session;
+) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn Error>> {
+    // Lock the session for mutable access
+    let mut session = model.session.lock().map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    let session_ref: &mut ort::session::Session = &mut session;
 
     let mut ortified_inputs: Vec<ort::session::SessionInputValue> = Vec::new();
 
-    for (elixir_input, onnx_input) in zip(inputs, &session.inputs) {
+    for (elixir_input, onnx_input) in zip(inputs, &session_ref.inputs) {
         let derefed_input: &OrtexTensor = &elixir_input;
         if is_bool_input(&onnx_input.input_type) {
-            // this assumes that the boolean input isn't huge -- we're cloning it twice;
-            // once below, once in the try_into()
             let boolified_input: &OrtexTensor = &derefed_input.clone().to_bool();
             let v: ort::session::SessionInputValue = boolified_input.try_into()?;
             ortified_inputs.push(v);
@@ -105,26 +104,24 @@ pub fn run(
         }
     }
 
-    // Construct a Vec of ModelOutput enums based on the DynOrtTensor data type
-    let outputs = session.run(&ortified_inputs[..])?;
+    let outputs = session_ref.run(&ortified_inputs[..])?;
     let mut collected_outputs = Vec::new();
 
-    for output_descriptor in &session.outputs {
+    for output_descriptor in &session_ref.outputs {
         let output_name: &str = &output_descriptor.name;
-        let val = outputs.get(output_name).expect(
-            &format!(
+        let val = outputs
+            .get(output_name)
+            .expect(&format!(
                 "Expected {} to be in the outputs, but didn't find it",
                 output_name
-            )[..],
-        );
+            )[..]);
 
-        // NOTE: try_into impl here will implicitly map bool outputs to u8 outputs
         let ortextensor: OrtexTensor = val.try_into()?;
         let shape = ortextensor.shape();
         let (dtype, bits) = ortextensor.dtype();
 
         let collected_output = (ResourceArc::new(ortextensor), shape, dtype, bits);
-        collected_outputs.push(collected_output)
+        collected_outputs.push(collected_output);
     }
 
     Ok(collected_outputs)
