@@ -106,6 +106,16 @@ pub fn concatenate<'a>(
 
 rustler::init!(
     "Elixir.Ortex.Native",
+    [
+        run,
+        init,
+        from_binary,
+        to_binary,
+        show_session,
+        slice,
+        reshape,
+        concatenate
+    ],
     load = |env: Env, _term: Term| -> bool {
         rustler::resource!(OrtexModel, env);
         rustler::resource!(OrtexTensor, env);

@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 resolver = "2"
 
 [dependencies]
-rustler = "0.36.2"
+rustler = "0.33"
 ort-sys = { version = "=2.0.0-rc.10", default-features = false }
 ort = { version = "2.0.0-rc.10", features = ["half"] }
 ndarray = "0.16.1"
