@@ -13,9 +13,9 @@ crate-type = ["cdylib"]
 resolver = "2"
 
 [dependencies]
-rustler = "0.33"
+rustler = "0.36.2"
 ort-sys = { version = "=2.0.0-rc.10", default-features = false }
-ort = { version = "2.0.0-rc.10", features = ["half"] }
+ort = { version = "2.0.0-rc.10", features = ["half", "cuda"] }
 ndarray = "0.16.1"
 half = "2.6.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -15,7 +15,7 @@ use ort::execution_providers::ExecutionProviderDispatch;
 use ort::session::builder::GraphOptimizationLevel;
 
 /// A faster (unsafe) way of creating an Array from an Erlang binary
-fn initialize_from_raw_ptr<T>(ptr: *const T, shape: &[Ix]) -> ArrayViewMut<T, IxDyn> {
+fn initialize_from_raw_ptr<T>(ptr: *const T, shape: &[Ix]) -> ArrayViewMut<'_, T, IxDyn> {
     let array = unsafe { ArrayViewMut::from_shape_ptr(shape, ptr as *mut T) };
     array
 }
@@ -96,7 +96,7 @@ pub fn map_eps(env: rustler::env::Env, eps: Vec<Atom>) -> Vec<ExecutionProviderD
     eps.iter()
         .map(|e| match &e.to_term(env).atom_to_string().unwrap()[..] {
             CPU => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
-            CUDA => ort::execution_providers::cuda::CUDAExecutionProvider::default().build(),
+            CUDA => ort::execution_providers::cuda::CUDAExecutionProvider::default().build().error_on_failure(),
             TENSORRT => {
                 ort::execution_providers::tensorrt::TensorRTExecutionProvider::default().build()
             }

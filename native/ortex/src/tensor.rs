@@ -5,6 +5,7 @@ use ndarray::{ArrayBase, ArrayView, Data, IxDyn, IxDynImpl, ViewRepr};
 use ort::value::Value;
 use ort::Error;
 use rustler::Atom;
+use rustler::Resource;
 use rustler::ResourceArc;
 use std::error::Error as StdError;
 
@@ -203,6 +204,8 @@ impl OrtexTensor {
         }
     }
 }
+
+impl Resource for OrtexTensor {}
 
 fn slice_array<'a, T, D>(
     array: &'a Array<T, D>,
@@ -441,7 +444,7 @@ macro_rules! concatenate {
     // `typ` is the actual datatype, `ort_tensor_kind` is the OrtexTensor variant
     ($tensors:expr, $axis:expr, $typ:ty, $ort_tensor_kind:ident) => {{
         type ArrayType<'a> = ArrayBase<ViewRepr<&'a $typ>, Dim<IxDynImpl>>;
-        fn filter(tensor: &OrtexTensor) -> Option<ArrayType> {
+        fn filter<'a>(tensor: &'a OrtexTensor) -> Option<ArrayType<'a>> {
             match tensor {
                 OrtexTensor::$ort_tensor_kind(x) => Some(x.view()),
                 _ => None,

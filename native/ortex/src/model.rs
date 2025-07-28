@@ -17,6 +17,7 @@ use ort::execution_providers::ExecutionProviderDispatch;
 use ort::session::Session;
 use ort::Error;
 use rustler::Atom;
+use rustler::Resource;
 use rustler::ResourceArc;
 use std::error::Error as StdError;
 use std::sync::Mutex;
@@ -26,6 +27,7 @@ use std::sync::Mutex;
 pub struct OrtexModel {
     pub session: Mutex<ort::session::Session>,
 }
+impl Resource for OrtexModel {}
 
 // Since we're only using the session for inference and
 // inference is threadsafe, this Sync is safe. Additionally,
