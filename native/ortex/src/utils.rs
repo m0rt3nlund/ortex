@@ -7,8 +7,8 @@ use ndarray::{ArrayViewMut, Ix, IxDyn};
 
 use ndarray::ShapeError;
 
-use rustler::ResourceArc;
 use rustler::types::Binary;
+use rustler::ResourceArc;
 use rustler::{Atom, Env, NifResult};
 
 use ort::execution_providers::ExecutionProviderDispatch;
@@ -96,7 +96,7 @@ pub fn map_eps(env: rustler::env::Env, eps: Vec<Atom>) -> Vec<ExecutionProviderD
     eps.iter()
         .map(|e| match &e.to_term(env).atom_to_string().unwrap()[..] {
             CPU => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
-            CUDA => ort::execution_providers::cuda::CUDAExecutionProvider::default().build().error_on_failure(),
+            CUDA => ort::execution_providers::cuda::CUDAExecutionProvider::default().build(),
             TENSORRT => {
                 ort::execution_providers::tensorrt::TensorRTExecutionProvider::default().build()
             }
