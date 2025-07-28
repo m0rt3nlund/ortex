@@ -15,17 +15,16 @@ use std::iter::zip;
 
 use ort::execution_providers::ExecutionProviderDispatch;
 use ort::session::Session;
-use ort::util::Mutex;
 use ort::Error;
 use rustler::Atom;
 use rustler::ResourceArc;
 use std::error::Error as StdError;
-use std::sync::Arc;
+use std::sync::Mutex;
 
 /// Holds the model state which include onnxruntime session and environment. All
 /// are threadsafe so this can be called concurrently from the beam.
 pub struct OrtexModel {
-    pub session: Arc<Mutex<ort::session::Session>>,
+    pub session: Mutex<ort::session::Session>,
 }
 
 // Since we're only using the session for inference and
@@ -50,7 +49,7 @@ pub fn init(
         .commit_from_file(model_path)?;
 
     let state = OrtexModel {
-        session: Arc::new(Mutex::new(session)),
+        session: session.into(),
     };
     Ok(state)
 }
@@ -64,8 +63,7 @@ pub fn show(
     Vec<(String, String, Option<Vec<i64>>)>,
     Vec<(String, String, Option<Vec<i64>>)>,
 ) {
-    let model: &OrtexModel = &*model;
-    let session = model.session.lock();
+    let session: &mut ort::session::Session = &mut model.session.lock().unwrap();
 
     let mut inputs = Vec::new();
     for input in session.inputs.iter() {
@@ -92,7 +90,7 @@ pub fn run(
     model: ResourceArc<OrtexModel>,
     inputs: Vec<ResourceArc<OrtexTensor>>,
 ) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError>> {
-    let mut session = model.session.lock();
+    let session: &mut ort::session::Session = &mut model.session.lock().unwrap();
 
     let mut ortified_inputs: Vec<ort::session::SessionInputValue> = Vec::new();
 
@@ -108,12 +106,10 @@ pub fn run(
         }
     }
 
-    let output_descriptors = session.outputs.clone();
     let outputs = session.run(&ortified_inputs[..])?;
     let mut collected_outputs = Vec::new();
 
-    for output_descriptor in output_descriptors {
-        let output_name: &str = &output_descriptor.name;
+    for output_name in outputs.keys() {
         let val = outputs.get(output_name).expect(
             &format!(
                 "Expected {} to be in the outputs, but didn't find it",
@@ -124,10 +120,26 @@ pub fn run(
         let ortextensor: OrtexTensor = val.try_into()?;
         let shape = ortextensor.shape();
         let (dtype, bits) = ortextensor.dtype();
-
         let collected_output = (ResourceArc::new(ortextensor), shape, dtype, bits);
         collected_outputs.push(collected_output);
     }
+
+    // for output_descriptor in &session.outputs {
+    //     let output_name: &str = &output_descriptor.name;
+    //     let val = outputs.get(output_name).expect(
+    //         &format!(
+    //             "Expected {} to be in the outputs, but didn't find it",
+    //             output_name
+    //         )[..],
+    //     );
+
+    //     let ortextensor: OrtexTensor = val.try_into()?;
+    //     let shape = ortextensor.shape();
+    //     let (dtype, bits) = ortextensor.dtype();
+
+    //     let collected_output = (ResourceArc::new(ortextensor), shape, dtype, bits);
+    //     collected_outputs.push(collected_output);
+    // }
 
     Ok(collected_outputs)
 }
