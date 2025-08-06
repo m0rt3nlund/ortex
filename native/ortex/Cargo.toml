@@ -18,9 +18,9 @@ ort-sys = { version = "=2.0.0-rc.10", default-features = false }
 ort = { version = "2.0.0-rc.10", features = [
     "half",
     "cuda",
-    "tensorrt",
-    "directml",
-    "coreml"
+   # "tensorrt",
+   # "directml",
+   # "coreml"
 ] }
 ndarray = "0.16.1"
 half = "2.6.0"
