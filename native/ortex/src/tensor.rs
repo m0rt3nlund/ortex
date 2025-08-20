@@ -444,7 +444,7 @@ macro_rules! concatenate {
     // `typ` is the actual datatype, `ort_tensor_kind` is the OrtexTensor variant
     ($tensors:expr, $axis:expr, $typ:ty, $ort_tensor_kind:ident) => {{
         type ArrayType<'a> = ArrayBase<ViewRepr<&'a $typ>, Dim<IxDynImpl>>;
-        fn filter<'a>(tensor: &'a OrtexTensor) -> Option<ArrayType<'a>> {
+        fn filter(tensor: &OrtexTensor) -> Option<ArrayType<'_>> {
             match tensor {
                 OrtexTensor::$ort_tensor_kind(x) => Some(x.view()),
                 _ => None,

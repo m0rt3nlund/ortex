@@ -126,22 +126,5 @@ pub fn run(
         collected_outputs.push(collected_output);
     }
 
-    // for output_descriptor in &session.outputs {
-    //     let output_name: &str = &output_descriptor.name;
-    //     let val = outputs.get(output_name).expect(
-    //         &format!(
-    //             "Expected {} to be in the outputs, but didn't find it",
-    //             output_name
-    //         )[..],
-    //     );
-
-    //     let ortextensor: OrtexTensor = val.try_into()?;
-    //     let shape = ortextensor.shape();
-    //     let (dtype, bits) = ortextensor.dtype();
-
-    //     let collected_output = (ResourceArc::new(ortextensor), shape, dtype, bits);
-    //     collected_outputs.push(collected_output);
-    // }
-
     Ok(collected_outputs)
 }
