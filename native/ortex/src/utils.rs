@@ -96,16 +96,18 @@ pub fn map_eps(env: rustler::env::Env, eps: Vec<Atom>) -> Vec<ExecutionProviderD
     eps.iter()
         .map(|e| match &e.to_term(env).atom_to_string().unwrap()[..] {
             CPU => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
-            CUDA => ort::execution_providers::cuda::CUDAExecutionProvider::default().build(),
-            TENSORRT => {
-                ort::execution_providers::tensorrt::TensorRTExecutionProvider::default().build()
-            }
+            CUDA => ort::execution_providers::cuda::CUDAExecutionProvider::default()
+                .build()
+                .error_on_failure(),
+            TENSORRT => ort::execution_providers::tensorrt::TensorRTExecutionProvider::default()
+                .build()
+                .error_on_failure(),
             ACL => ort::execution_providers::acl::ACLExecutionProvider::default().build(),
             ONEDNN => ort::execution_providers::onednn::OneDNNExecutionProvider::default().build(),
             COREML => ort::execution_providers::coreml::CoreMLExecutionProvider::default().build(),
-            DIRECTML => {
-                ort::execution_providers::directml::DirectMLExecutionProvider::default().build()
-            }
+            DIRECTML => ort::execution_providers::directml::DirectMLExecutionProvider::default()
+                .build()
+                .error_on_failure(),
             ROCM => ort::execution_providers::rocm::ROCmExecutionProvider::default().build(),
             _ => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
         })

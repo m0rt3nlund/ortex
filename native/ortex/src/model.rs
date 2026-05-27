@@ -10,6 +10,7 @@
 
 use crate::tensor::OrtexTensor;
 use crate::utils::{is_bool_input, map_opt_level};
+use ndarray::{s, Array2, ArrayView3};
 use std::convert::TryInto;
 use std::iter::zip;
 
@@ -17,8 +18,11 @@ use ort::execution_providers::ExecutionProviderDispatch;
 use ort::session::Session;
 use ort::Error;
 use rustler::Atom;
+use rustler::Env;
+use rustler::NewBinary;
 use rustler::Resource;
 use rustler::ResourceArc;
+use rustler::Term;
 use std::error::Error as StdError;
 use std::sync::Mutex;
 
@@ -43,7 +47,7 @@ pub fn init(
     opt: i32,
 ) -> Result<OrtexModel, Error> {
     // TODO: send tracing logs to erlang/elixir _somehow_
-    // tracing_subscriber::fmt::init();
+    //tracing_subscriber::fmt::init();
 
     let session = Session::builder()?
         .with_optimization_level(map_opt_level(opt))?
@@ -127,4 +131,84 @@ pub fn run(
     }
 
     Ok(collected_outputs)
+}
+
+pub fn create_mask<'a>(
+    env: Env<'a>,
+    coefficients: Vec<f32>,
+    prototypes_bin: rustler::Binary,
+    proto_shape_term: Term<'a>, // Elixir tuple {batch, m, h, w} -> Vec<usize>
+    threshold: f32,
+) -> Result<Term<'a>, rustler::Error> {
+    // Decode as 4-element tuple directly
+    let (batch_size, m, height, width): (usize, usize, usize, usize) =
+        proto_shape_term.decode().map_err(|e| {
+            println!("Failed to decode tuple: {:?}", e);
+            rustler::Error::BadArg
+        })?;
+
+    // Validate 4D
+    let expected_proto_size = batch_size * m * height * width;
+    let f32_size = std::mem::size_of::<f32>();
+
+    // Validate coefficients
+    if coefficients.len() != m {
+        println!(
+            "Invalid coefficients length: {}, expected: {}",
+            coefficients.len(),
+            m
+        );
+        return Err(rustler::Error::BadArg);
+    }
+
+    // Validate prototypes binary
+    let protos_bytes = prototypes_bin.as_slice();
+    if protos_bytes.len() != expected_proto_size * f32_size {
+        println!(
+            "Invalid prototypes binary size: {}, expected: {}",
+            protos_bytes.len(),
+            expected_proto_size * f32_size
+        );
+        return Err(rustler::Error::BadArg);
+    }
+    let protos_slice: &[f32] = unsafe {
+        std::slice::from_raw_parts(protos_bytes.as_ptr() as *const f32, expected_proto_size)
+    };
+
+    // Assume single batch
+    if batch_size != 1 {
+        println!("Batch size not 1: {}", batch_size);
+        return Err(rustler::Error::BadArg);
+    }
+
+    // Reshape to 3D view
+    let proto_3d =
+        ArrayView3::<f32>::from_shape((m, height, width), protos_slice).map_err(|e| {
+            println!("ArrayView3 error: {:?}", e);
+            rustler::Error::BadArg
+        })?;
+
+    // Weighted sum
+    let mut output = Array2::<f32>::zeros((height, width));
+    for i in 0..m {
+        let proto_slice = proto_3d.slice(s![i, .., ..]);
+        let weighted = proto_slice.mapv(|x| x * coefficients[i]);
+        output += &weighted;
+    }
+
+    // Sigmoid and threshold
+    let sigmoid = output.mapv(|x| 1.0 / (1.0 + (-x).exp()));
+    let binary = sigmoid.mapv(|x| if x >= threshold { 255u8 } else { 0u8 });
+    let binary_vec = binary
+        .to_shape(height * width)
+        .map_err(|e| {
+            println!("Flatten error: {:?}", e);
+            rustler::Error::BadArg
+        })?
+        .to_vec();
+
+    // Return binary
+    let mut new_bin = NewBinary::new(env, binary_vec.len());
+    new_bin.as_mut_slice().copy_from_slice(&binary_vec);
+    Ok(new_bin.into())
 }

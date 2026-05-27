@@ -15,4 +15,5 @@ ortex_features =
     {:unix, _} -> ["cuda", "tensorrt"]
   end
 
+#config :nx, default_backend: {Torchx.Backend, device: :cuda}
 config :ortex, Ortex.Native, features: ortex_features

@@ -24,3 +24,12 @@ ortex-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# Priv output
+/priv/native
+
+/lib/framework
+/lib/mix
+compile.bat
+compile.sh
+test.bat

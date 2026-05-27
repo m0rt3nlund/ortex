@@ -5,6 +5,7 @@
 //! directly.
 
 mod constants;
+mod image;
 mod model;
 mod tensor;
 mod utils;
@@ -93,6 +94,34 @@ pub fn reshape<'a>(
 }
 
 #[rustler::nif]
+pub fn prepare_image<'a>(
+    env: Env<'a>,
+    bin: Binary,
+    width: u32,
+    height: u32,
+    size: u32,
+) -> NifResult<Term<'a>> {
+    image::prepare_image(env, bin, width, height, size)
+}
+
+#[rustler::nif]
+pub fn create_mask<'a>(
+    env: Env<'a>,
+    coefficients: Vec<f32>,
+    prototypes_bin: rustler::Binary,
+    proto_shape_term: Term<'a>, // Elixir tuple {batch, m, h, w} -> Vec<usize>
+    threshold: f32,
+) -> Result<Term<'a>, rustler::Error> {
+    model::create_mask(
+        env,
+        coefficients,
+        prototypes_bin,
+        proto_shape_term,
+        threshold,
+    )
+}
+
+#[rustler::nif]
 pub fn concatenate<'a>(
     tensors: Vec<ResourceArc<OrtexTensor>>,
     dtype: Term,
@@ -105,12 +134,11 @@ pub fn concatenate<'a>(
 }
 
 pub fn on_load(env: Env) -> bool {
+    tracing_subscriber::fmt::init();
     env.register::<OrtexModel>().is_ok() && env.register::<OrtexTensor>().is_ok()
 }
 
 rustler::init!(
     "Elixir.Ortex.Native",
-    load = |env: Env, _term: Term| -> bool {
-        on_load(env)
-    }
+    load = |env: Env, _term: Term| -> bool { on_load(env) }
 );
