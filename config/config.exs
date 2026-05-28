@@ -10,7 +10,7 @@ config :ortex,
 # based on the OS we're running on
 ortex_features =
   case :os.type() do
-    {:win32, _} -> ["directml"]
+    {:win32, _} -> ["cuda", "tensorrt"]
     {:unix, :darwin} -> ["coreml"]
     {:unix, _} -> ["cuda", "tensorrt"]
   end

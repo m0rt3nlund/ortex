@@ -12,7 +12,6 @@ use crate::tensor::OrtexTensor;
 use crate::utils::{is_bool_input, map_opt_level};
 use ndarray::{s, Array2, ArrayView3};
 use std::convert::TryInto;
-use std::iter::zip;
 
 use ort::execution_providers::ExecutionProviderDispatch;
 use ort::session::Session;
@@ -98,16 +97,28 @@ pub fn run(
 ) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError>> {
     let session: &mut ort::session::Session = &mut model.session.lock().unwrap();
 
-    let mut ortified_inputs: Vec<ort::session::SessionInputValue> = Vec::new();
+    // Bool-converted temporaries must outlive ortified_inputs since inputs borrow from them.
+    let bool_converted: Vec<OrtexTensor> = inputs
+        .iter()
+        .zip(&session.inputs)
+        .filter_map(|(elixir_input, onnx_input)| {
+            if is_bool_input(&onnx_input.input_type) {
+                Some((&**elixir_input).clone().to_bool())
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    for (elixir_input, onnx_input) in zip(inputs, &session.inputs) {
-        let derefed_input: &OrtexTensor = &elixir_input;
+    let mut bool_iter = bool_converted.iter();
+    let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
+
+    for (elixir_input, onnx_input) in inputs.iter().zip(&session.inputs) {
         if is_bool_input(&onnx_input.input_type) {
-            let boolified_input: &OrtexTensor = &derefed_input.clone().to_bool();
-            let v: ort::session::SessionInputValue = boolified_input.try_into()?;
+            let v: ort::session::SessionInputValue<'_> = bool_iter.next().unwrap().try_into()?;
             ortified_inputs.push(v);
         } else {
-            let v: ort::session::SessionInputValue = derefed_input.try_into()?;
+            let v: ort::session::SessionInputValue<'_> = (&**elixir_input).try_into()?;
             ortified_inputs.push(v);
         }
     }

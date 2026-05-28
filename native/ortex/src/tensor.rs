@@ -2,7 +2,7 @@
 use core::convert::TryFrom;
 use ndarray::prelude::*;
 use ndarray::{ArrayBase, ArrayView, Data, IxDyn, IxDynImpl, ViewRepr};
-use ort::value::Value;
+use ort::value::{TensorRef, Value};
 use ort::Error;
 use rustler::Atom;
 use rustler::Resource;
@@ -391,25 +391,24 @@ impl TryFrom<&Value> for OrtexTensor {
     }
 }
 
-impl TryFrom<&OrtexTensor> for ort::session::SessionInputValue<'_> {
+impl<'a> TryFrom<&'a OrtexTensor> for ort::session::SessionInputValue<'a> {
     type Error = Error;
-    fn try_from(ort_tensor: &OrtexTensor) -> Result<Self, Self::Error> {
-        let value: Value = match ort_tensor {
-            OrtexTensor::s8(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::s16(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::s32(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::s64(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::f16(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::f32(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::f64(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::bf16(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::u8(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::u16(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::u32(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::u64(arr) => Value::from_array(arr.to_owned())?.into(),
-            OrtexTensor::bool(arr) => Value::from_array(arr.to_owned())?.into(),
-        };
-        Ok(ort::session::SessionInputValue::from(value))
+    fn try_from(ort_tensor: &'a OrtexTensor) -> Result<Self, Self::Error> {
+        Ok(match ort_tensor {
+            OrtexTensor::s8(arr) => TensorRef::<i8>::from_array_view(arr.view())?.into(),
+            OrtexTensor::s16(arr) => TensorRef::<i16>::from_array_view(arr.view())?.into(),
+            OrtexTensor::s32(arr) => TensorRef::<i32>::from_array_view(arr.view())?.into(),
+            OrtexTensor::s64(arr) => TensorRef::<i64>::from_array_view(arr.view())?.into(),
+            OrtexTensor::f16(arr) => TensorRef::<half::f16>::from_array_view(arr.view())?.into(),
+            OrtexTensor::f32(arr) => TensorRef::<f32>::from_array_view(arr.view())?.into(),
+            OrtexTensor::f64(arr) => TensorRef::<f64>::from_array_view(arr.view())?.into(),
+            OrtexTensor::bf16(arr) => TensorRef::<half::bf16>::from_array_view(arr.view())?.into(),
+            OrtexTensor::u8(arr) => TensorRef::<u8>::from_array_view(arr.view())?.into(),
+            OrtexTensor::u16(arr) => TensorRef::<u16>::from_array_view(arr.view())?.into(),
+            OrtexTensor::u32(arr) => TensorRef::<u32>::from_array_view(arr.view())?.into(),
+            OrtexTensor::u64(arr) => TensorRef::<u64>::from_array_view(arr.view())?.into(),
+            OrtexTensor::bool(arr) => TensorRef::<bool>::from_array_view(arr.view())?.into(),
+        })
     }
 }
 
