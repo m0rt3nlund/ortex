@@ -39,15 +39,19 @@ defmodule Ortex.Model do
 
   @doc false
   def run(%Ortex.Model{reference: model}, tensors) do
-    # Move tensors into Ortex backend and pass the reference to the Ortex NIF
+    {t_transfer, tensor_refs} = :timer.tc(fn ->
+      tensors
+      |> Tuple.to_list()
+      |> Enum.map(fn x -> x |> Nx.backend_transfer(Ortex.Backend) end)
+      |> Enum.map(fn %Nx.Tensor{data: %Ortex.Backend{ref: x}} -> x end)
+    end)
+
+    {t_nif, raw_output} = :timer.tc(fn -> Ortex.Native.run(model, tensor_refs) end)
+
+    IO.puts(:stderr, "[ortex elixir] backend_transfer=#{t_transfer}µs  nif_run=#{t_nif}µs")
+
     output =
-      case Ortex.Native.run(
-             model,
-             tensors
-             |> Tuple.to_list()
-             |> Enum.map(fn x -> x |> Nx.backend_transfer(Ortex.Backend) end)
-             |> Enum.map(fn %Nx.Tensor{data: %Ortex.Backend{ref: x}} -> x end)
-           ) do
+      case raw_output do
         {:error, msg} -> raise msg
         output -> output
       end
