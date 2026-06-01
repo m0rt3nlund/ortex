@@ -10,13 +10,15 @@
 
 use crate::tensor::OrtexTensor;
 use crate::utils::{is_bool_input, map_opt_level};
-use ndarray::{s, Array2, ArrayView3};
+use ndarray::{s, Array, Array2, ArrayView, ArrayView3, IxDyn};
 use std::convert::TryInto;
 
 use ort::execution_providers;
 use ort::execution_providers::ExecutionProviderDispatch;
 use ort::session::Session;
+use ort::value::TensorRef;
 use ort::Error;
+use rustler::types::Binary;
 use rustler::Atom;
 use rustler::Env;
 use rustler::NewBinary;
@@ -159,6 +161,84 @@ pub fn run(
         t_extract - t_run,
         t_end - t_extract,
         t_end - t_start
+    );
+
+    Ok(collected_outputs)
+}
+
+/// Like `run`, but takes raw BEAM binaries instead of OrtexTensor ResourceArcs.
+/// Creates zero-copy TensorRef views directly from BEAM binary pointers, avoiding
+/// the separate from_binary NIF call and the ndarray heap copy entirely.
+pub fn run_binary<'a>(
+    model: ResourceArc<OrtexModel>,
+    inputs: &[(Binary<'a>, Vec<usize>, String, usize)],
+) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError>> {
+    let session: &mut Session = &mut model.session.lock().unwrap();
+
+    let mut ortified_inputs: Vec<ort::session::SessionInputValue<'a>> = Vec::new();
+
+    for ((bin, shape, dtype_str, dtype_bits), onnx_input) in inputs.iter().zip(&session.inputs) {
+        let n: usize = shape.iter().product();
+        let ptr = bin.as_ptr();
+
+        if is_bool_input(&onnx_input.input_type) {
+            // Bool inputs require a type conversion; owned copy is unavoidable here.
+            let u8_slice = &bin.as_slice()[..n];
+            let bool_vec: Vec<bool> = u8_slice.iter().map(|&x| x != 0).collect();
+            let arr = Array::from_shape_vec(IxDyn(shape.as_slice()), bool_vec)?;
+            ortified_inputs.push(ort::value::Value::from_array(arr)?.into());
+            continue;
+        }
+
+        macro_rules! make_input {
+            ($t:ty) => {{
+                // SAFETY: Binary<'a> is pinned by the BEAM for the duration of this NIF call.
+                // The slice, ArrayView, and TensorRef all borrow with lifetime 'a which is
+                // the NIF env lifetime, so they cannot outlive the binary data.
+                let slice: &'a [$t] = unsafe {
+                    std::slice::from_raw_parts(ptr as *const $t, n)
+                };
+                let arr = ArrayView::<$t, IxDyn>::from_shape(IxDyn(shape.as_slice()), slice)?;
+                TensorRef::<$t>::from_array_view(arr)?.into()
+            }};
+        }
+
+        let v: ort::session::SessionInputValue<'a> = match (dtype_str.as_ref(), *dtype_bits) {
+            ("f", 32)  => make_input!(f32),
+            ("f", 64)  => make_input!(f64),
+            ("f", 16)  => make_input!(half::f16),
+            ("bf", 16) => make_input!(half::bf16),
+            ("s", 8)   => make_input!(i8),
+            ("s", 16)  => make_input!(i16),
+            ("s", 32)  => make_input!(i32),
+            ("s", 64)  => make_input!(i64),
+            ("u", 8)   => make_input!(u8),
+            ("u", 16)  => make_input!(u16),
+            ("u", 32)  => make_input!(u32),
+            ("u", 64)  => make_input!(u64),
+            _ => return Err(format!("unsupported dtype ({}, {})", dtype_str, dtype_bits).into()),
+        };
+        ortified_inputs.push(v);
+    }
+
+    let t_run = std::time::Instant::now();
+    let outputs = session.run(&ortified_inputs[..])?;
+    let t_extract = std::time::Instant::now();
+
+    let mut collected_outputs = Vec::new();
+    for output_name in outputs.keys() {
+        let val = outputs.get(output_name).expect("output key missing");
+        let ortextensor: OrtexTensor = val.try_into()?;
+        let shape = ortextensor.shape();
+        let (dtype, bits) = ortextensor.dtype();
+        collected_outputs.push((ResourceArc::new(ortextensor), shape, dtype, bits));
+    }
+
+    let t_end = std::time::Instant::now();
+    eprintln!(
+        "[ortex run_binary] session.run={:?}  output_extract={:?}",
+        t_extract - t_run,
+        t_end - t_extract,
     );
 
     Ok(collected_outputs)
