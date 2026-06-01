@@ -182,35 +182,31 @@ pub fn run_binary<'a>(
                 // SAFETY: Binary<'a> is pinned by the BEAM for the duration of this NIF call.
                 // The slice, ArrayView, and TensorRef all borrow with lifetime 'a which is
                 // the NIF env lifetime, so they cannot outlive the binary data.
-                let slice: &'a [$t] = unsafe {
-                    std::slice::from_raw_parts(ptr as *const $t, n)
-                };
+                let slice: &'a [$t] = unsafe { std::slice::from_raw_parts(ptr as *const $t, n) };
                 let arr = ArrayView::<$t, IxDyn>::from_shape(IxDyn(shape.as_slice()), slice)?;
                 TensorRef::<$t>::from_array_view(arr)?.into()
             }};
         }
 
         let v: ort::session::SessionInputValue<'a> = match (dtype_str.as_ref(), *dtype_bits) {
-            ("f", 32)  => make_input!(f32),
-            ("f", 64)  => make_input!(f64),
-            ("f", 16)  => make_input!(half::f16),
+            ("f", 32) => make_input!(f32),
+            ("f", 64) => make_input!(f64),
+            ("f", 16) => make_input!(half::f16),
             ("bf", 16) => make_input!(half::bf16),
-            ("s", 8)   => make_input!(i8),
-            ("s", 16)  => make_input!(i16),
-            ("s", 32)  => make_input!(i32),
-            ("s", 64)  => make_input!(i64),
-            ("u", 8)   => make_input!(u8),
-            ("u", 16)  => make_input!(u16),
-            ("u", 32)  => make_input!(u32),
-            ("u", 64)  => make_input!(u64),
+            ("s", 8) => make_input!(i8),
+            ("s", 16) => make_input!(i16),
+            ("s", 32) => make_input!(i32),
+            ("s", 64) => make_input!(i64),
+            ("u", 8) => make_input!(u8),
+            ("u", 16) => make_input!(u16),
+            ("u", 32) => make_input!(u32),
+            ("u", 64) => make_input!(u64),
             _ => return Err(format!("unsupported dtype ({}, {})", dtype_str, dtype_bits).into()),
         };
         ortified_inputs.push(v);
     }
 
-    let t_run = std::time::Instant::now();
     let outputs = session.run(&ortified_inputs[..])?;
-    let t_extract = std::time::Instant::now();
 
     let mut collected_outputs = Vec::new();
     for output_name in outputs.keys() {
@@ -220,13 +216,6 @@ pub fn run_binary<'a>(
         let (dtype, bits) = ortextensor.dtype();
         collected_outputs.push((ResourceArc::new(ortextensor), shape, dtype, bits));
     }
-
-    let t_end = std::time::Instant::now();
-    eprintln!(
-        "[ortex run_binary] session.run={:?}  output_extract={:?}",
-        t_extract - t_run,
-        t_end - t_extract,
-    );
 
     Ok(collected_outputs)
 }
