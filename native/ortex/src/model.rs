@@ -106,8 +106,6 @@ pub fn run(
 ) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError>> {
     let session: &mut ort::session::Session = &mut model.session.lock().unwrap();
 
-    let t_start = std::time::Instant::now();
-
     // Bool-converted temporaries must outlive ortified_inputs since inputs borrow from them.
     let bool_converted: Vec<OrtexTensor> = inputs
         .iter()
@@ -134,9 +132,7 @@ pub fn run(
         }
     }
 
-    let t_run = std::time::Instant::now();
     let outputs = session.run(&ortified_inputs[..])?;
-    let t_extract = std::time::Instant::now();
     let mut collected_outputs = Vec::new();
 
     for output_name in outputs.keys() {
@@ -153,15 +149,6 @@ pub fn run(
         let collected_output = (ResourceArc::new(ortextensor), shape, dtype, bits);
         collected_outputs.push(collected_output);
     }
-
-    let t_end = std::time::Instant::now();
-    eprintln!(
-        "[ortex] input_prep={:?}  session.run={:?}  output_extract={:?}  total_rust={:?}",
-        t_run - t_start,
-        t_extract - t_run,
-        t_end - t_extract,
-        t_end - t_start
-    );
 
     Ok(collected_outputs)
 }
