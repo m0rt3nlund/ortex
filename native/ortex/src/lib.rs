@@ -21,7 +21,7 @@ use rustler::{Atom, Env, NifResult, Term};
 fn init(
     env: Env,
     model_path: String,
-    eps: Vec<Atom>,
+    eps: Vec<(Atom, Vec<(String, String)>)>,
     opt: i32,
 ) -> NifResult<ResourceArc<model::OrtexModel>> {
     let eps = utils::map_eps(env, eps);

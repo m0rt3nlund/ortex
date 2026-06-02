@@ -23,7 +23,16 @@ defmodule Ortex.Model do
 
   @doc false
   def load(path, eps \\ [:cpu], opt \\ 3) do
-    case Ortex.Native.init(path, eps, opt) do
+    normalized =
+      Enum.map(eps, fn
+        ep when is_atom(ep) ->
+          {ep, []}
+
+        {ep, opts} ->
+          {ep, Enum.map(opts, fn {k, v} -> {Atom.to_string(k), to_string(v)} end)}
+      end)
+
+    case Ortex.Native.init(path, normalized, opt) do
       {:error, msg} ->
         raise msg
 

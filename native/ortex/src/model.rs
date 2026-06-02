@@ -13,7 +13,6 @@ use crate::utils::{is_bool_input, map_opt_level};
 use ndarray::{s, Array, Array2, ArrayView, ArrayView3, IxDyn};
 use std::convert::TryInto;
 
-use ort::execution_providers;
 use ort::execution_providers::ExecutionProviderDispatch;
 use ort::session::Session;
 use ort::value::TensorRef;
@@ -53,13 +52,7 @@ pub fn init(
 
     let session = Session::builder()?
         .with_optimization_level(map_opt_level(opt))?
-        .with_execution_providers([execution_providers::TensorRTExecutionProvider::default()
-            .with_max_workspace_size(2147483648)
-            .with_engine_cache(true)
-            .with_engine_cache_path("/opt/maskon/mvision")
-            .with_fp16(true)
-            .with_int8(false)
-            .build()])?
+        .with_execution_providers(eps)?
         .commit_from_file(model_path)?;
 
     let state = OrtexModel {
