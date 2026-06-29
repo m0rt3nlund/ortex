@@ -18,8 +18,8 @@ defmodule Ortex.Model do
   `nil` values represent dynamic dimensions
   """
 
-  @enforce_keys [:reference]
-  defstruct [:reference]
+  @enforce_keys [:reference, :inputs, :outputs]
+  defstruct [:reference, :inputs, :outputs]
 
   @doc false
   def load(path, eps \\ [:cpu], opt \\ 3) do
@@ -37,7 +37,25 @@ defmodule Ortex.Model do
         raise msg
 
       model ->
-        %Ortex.Model{reference: model}
+        {inputs, outputs} =
+          Ortex.Native.show_session(model)
+          |> case do
+            {inputs, outputs} ->
+              inputs =
+                inputs
+                |> Enum.reduce(%{}, fn {id, _, shape}, acc -> Map.put(acc, id, shape) end)
+
+              outputs =
+                outputs
+                |> Enum.reduce(%{}, fn {id, _, shape}, acc -> Map.put(acc, id, shape) end)
+
+              {inputs, outputs}
+
+            _ ->
+              {[], []}
+          end
+
+        %Ortex.Model{reference: model, inputs: inputs, outputs: outputs}
     end
   end
 
