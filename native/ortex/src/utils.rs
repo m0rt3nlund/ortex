@@ -93,50 +93,64 @@ pub fn to_binary<'a>(
 
 /// Takes a vec of (Atom, options) pairs and transforms them into ExecutionProviderDispatches.
 /// Options are flat string key-value pairs so they can be passed generically from Elixir.
-pub fn map_eps(env: rustler::env::Env, eps: Vec<(Atom, Vec<(String, String)>)>) -> Vec<ExecutionProviderDispatch> {
+pub fn map_eps(
+    env: rustler::env::Env,
+    eps: Vec<(Atom, Vec<(String, String)>)>,
+) -> Vec<ExecutionProviderDispatch> {
     eps.into_iter()
-        .map(|(e, opts)| match &e.to_term(env).atom_to_string().unwrap()[..] {
-            CPU => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
-            CUDA => ort::execution_providers::cuda::CUDAExecutionProvider::default()
-                .build()
-                .error_on_failure(),
-            TENSORRT => {
-                let mut workspace_size: usize = 1_073_741_824;
-                let mut engine_cache = false;
-                let mut engine_cache_path = String::new();
-                let mut fp16 = false;
-                let mut int8 = false;
-                for (k, v) in &opts {
-                    match k.as_str() {
-                        "max_workspace_size" => workspace_size = v.parse().unwrap_or(workspace_size),
-                        "engine_cache"       => engine_cache = v == "true",
-                        "engine_cache_path"  => engine_cache_path = v.clone(),
-                        "fp16"               => fp16 = v == "true",
-                        "int8"               => int8 = v == "true",
-                        _                    => {}
+        .map(
+            |(e, opts)| match &e.to_term(env).atom_to_string().unwrap()[..] {
+                CPU => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
+                CUDA => ort::execution_providers::cuda::CUDAExecutionProvider::default()
+                    .build()
+                    .error_on_failure(),
+                TENSORRT => {
+                    let mut workspace_size: usize = 1_073_741_824;
+                    let mut engine_cache = false;
+                    let mut engine_cache_path = String::new();
+                    let mut fp16 = false;
+                    let mut int8 = false;
+                    for (k, v) in &opts {
+                        match k.as_str() {
+                            "max_workspace_size" => {
+                                workspace_size = v.parse().unwrap_or(workspace_size)
+                            }
+                            "engine_cache" => engine_cache = v == "true",
+                            "engine_cache_path" => engine_cache_path = v.clone(),
+                            "fp16" => fp16 = v == "true",
+                            "int8" => int8 = v == "true",
+                            _ => {}
+                        }
                     }
+                    let ep =
+                        ort::execution_providers::tensorrt::TensorRTExecutionProvider::default()
+                            .with_max_workspace_size(workspace_size)
+                            .with_engine_cache(engine_cache)
+                            .with_fp16(fp16)
+                            .with_int8(int8);
+                    let ep = if engine_cache_path.is_empty() {
+                        ep
+                    } else {
+                        ep.with_engine_cache_path(engine_cache_path)
+                    };
+                    ep.build().error_on_failure()
                 }
-                let ep = ort::execution_providers::tensorrt::TensorRTExecutionProvider::default()
-                    .with_max_workspace_size(workspace_size)
-                    .with_engine_cache(engine_cache)
-                    .with_fp16(fp16)
-                    .with_int8(int8);
-                let ep = if engine_cache_path.is_empty() {
-                    ep
-                } else {
-                    ep.with_engine_cache_path(engine_cache_path)
-                };
-                ep.build().error_on_failure()
-            }
-            ACL     => ort::execution_providers::acl::ACLExecutionProvider::default().build(),
-            ONEDNN  => ort::execution_providers::onednn::OneDNNExecutionProvider::default().build(),
-            COREML  => ort::execution_providers::coreml::CoreMLExecutionProvider::default().build(),
-            DIRECTML => ort::execution_providers::directml::DirectMLExecutionProvider::default()
-                .build()
-                .error_on_failure(),
-            ROCM => ort::execution_providers::rocm::ROCmExecutionProvider::default().build(),
-            _ => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
-        })
+                ACL => ort::execution_providers::acl::ACLExecutionProvider::default().build(),
+                ONEDNN => {
+                    ort::execution_providers::onednn::OneDNNExecutionProvider::default().build()
+                }
+                COREML => {
+                    ort::execution_providers::coreml::CoreMLExecutionProvider::default().build()
+                }
+                DIRECTML => {
+                    ort::execution_providers::directml::DirectMLExecutionProvider::default()
+                        .build()
+                        .error_on_failure()
+                }
+                ROCM => ort::execution_providers::rocm::ROCmExecutionProvider::default().build(),
+                _ => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
+            },
+        )
         .collect()
 }
 
