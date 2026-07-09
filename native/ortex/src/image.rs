@@ -86,16 +86,6 @@ pub fn prepare_resized_image<'a>(
     }
 }
 
-/// Takes an already-resized BGR HWC u8 buffer -- no letterbox padding
-/// applied yet, e.g. straight out of Evision.resize/OpenCV, which does the
-/// actual resize step far faster than a hand-rolled loop can -- and
-/// produces a padded, normalized, RGB CHW f32 tensor of shape (3,
-/// canvas_size, canvas_size) in one pass: BGR->RGB swap, u8->f32 normalize
-/// (/255), HWC->CHW transpose, and center-letterbox padding, all fused into
-/// a single loop over the small, already-scaled input rather than the full
-/// camera frame (that full-frame version is what `custom_letterbox_resize`
-/// below did, and why fit_rust ended up slower than the Nx pipeline it was
-/// meant to replace: a naive per-pixel resize on the full sensor image).
 fn normalize_bgr_to_padded_chw(
     input: Vec<u8>,
     scaled_width: u32,
@@ -118,8 +108,7 @@ fn normalize_bgr_to_padded_chw(
     let mut tensor: Vec<u8> = vec![0u8; total_bytes];
 
     // Fill with the (normalized) pad value first -- cheaper than branching
-    // per-pixel inside the hot loop below to distinguish in-image vs
-    // padding regions.
+    // per-pixel inside the hot loop 
     {
         let pad_bytes = pad_norm.to_ne_bytes();
         for chunk in tensor.chunks_exact_mut(4) {
@@ -258,13 +247,6 @@ fn resize_and_normalize_to_tensor(
             .map_err(|_| "Failed to load image")?
             .to_rgb8()
     } else {
-        // Raw BGR HWC u8 from Evision.Mat.to_binary(). NOT swapped to RGB
-        // here -- the CHW-building loop below does the one authoritative
-        // BGR->RGB swap. (This used to also swap here, which combined with
-        // the loop's swap cancelled out to BGR order reaching the model --
-        // a real bug: detections were being run on channel-swapped input.)
-        // Resize/pad below are channel-order-agnostic, so it's safe to defer
-        // the swap to the loop that's already touching every pixel anyway.
         ImageBuffer::from_raw(width, height, input).ok_or("Invalid raw dimensions")?
     };
     //println!("Load time: {:?}", start_load.elapsed());
