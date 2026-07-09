@@ -44,4 +44,15 @@ defmodule Ortex.Native do
 
   def create_mask(_coefficients, _prototypes_bin, _proto_shape_term, _threshold), do: :erlang.nif_error(:nif_not_loaded)
   def prepare_image(_binary, _width, _height, _size), do: :erlang.nif_error(:nif_not_loaded)
+
+  def prepare_resized_image(
+        _binary,
+        _scaled_width,
+        _scaled_height,
+        _canvas_size,
+        _pad_x,
+        _pad_y,
+        _pad_value
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
 end

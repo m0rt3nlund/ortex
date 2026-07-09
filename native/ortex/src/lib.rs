@@ -123,6 +123,20 @@ pub fn prepare_image<'a>(
 }
 
 #[rustler::nif]
+pub fn prepare_resized_image<'a>(
+    env: Env<'a>,
+    bin: Binary,
+    scaled_width: u32,
+    scaled_height: u32,
+    canvas_size: u32,
+    pad_x: u32,
+    pad_y: u32,
+    pad_value: u8,
+) -> NifResult<Term<'a>> {
+    image::prepare_resized_image(env, bin, scaled_width, scaled_height, canvas_size, pad_x, pad_y, pad_value)
+}
+
+#[rustler::nif]
 pub fn create_mask<'a>(
     env: Env<'a>,
     coefficients: Vec<f32>,
