@@ -33,6 +33,9 @@ wide = "0.8.1"
 # [profile.dev]
 # debug = true # Enables full DWARF/PDB symbols (default on most platforms)
 
+[profile.dev]
+opt-level = 3
+
 [features]
 # ONNXRuntime Execution providers
 # coreml = ["ort/coreml"]
