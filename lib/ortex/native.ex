@@ -30,6 +30,7 @@ defmodule Ortex.Native do
 
   def run(_model, _inputs), do: :erlang.nif_error(:nif_not_loaded)
   def run_binary(_model, _inputs), do: :erlang.nif_error(:nif_not_loaded)
+  def run_cuda(_model, _inputs), do: :erlang.nif_error(:nif_not_loaded)
   def from_binary(_bin, _shape, _type), do: :erlang.nif_error(:nif_not_loaded)
   def to_binary(_reference, _bits, _limit), do: :erlang.nif_error(:nif_not_loaded)
   def show_session(_model), do: :erlang.nif_error(:nif_not_loaded)

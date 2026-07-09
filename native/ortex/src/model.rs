@@ -14,8 +14,10 @@ use ndarray::{s, Array, Array2, ArrayView, ArrayView3, IxDyn};
 use std::convert::TryInto;
 
 use ort::execution_providers::ExecutionProviderDispatch;
+use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
 use ort::session::Session;
-use ort::value::TensorRef;
+use ort::tensor::Shape;
+use ort::value::{TensorRef, TensorRefMut};
 use ort::Error;
 use rustler::types::Binary;
 use rustler::Atom;
@@ -195,6 +197,68 @@ pub fn run_binary<'a>(
             ("u", 32) => make_input!(u32),
             ("u", 64) => make_input!(u64),
             _ => return Err(format!("unsupported dtype ({}, {})", dtype_str, dtype_bits).into()),
+        };
+        ortified_inputs.push(v);
+    }
+
+    let outputs = session.run(&ortified_inputs[..])?;
+
+    let mut collected_outputs = Vec::new();
+    for output_name in outputs.keys() {
+        let val = outputs.get(output_name).expect("output key missing");
+        let ortextensor: OrtexTensor = val.try_into()?;
+        let shape = ortextensor.shape();
+        let (dtype, bits) = ortextensor.dtype();
+        collected_outputs.push((ResourceArc::new(ortextensor), shape, dtype, bits));
+    }
+
+    Ok(collected_outputs)
+}
+
+/// Like `run_binary`, but takes a raw CUDA device pointer (from
+/// `Torchx.data_ptr/1`) instead of a BEAM binary, for each input. Avoids the
+/// device->host->device round trip that `run`/`run_binary` incur when the
+/// input tensor is already GPU-resident (e.g. preprocessed via Torchx on
+/// `:cuda`): those paths always land the data in a host binary first, which
+/// onnxruntime then re-uploads to the GPU internally.
+///
+/// `inputs` is `(ptr, shape, dtype_str, dtype_bits, device_index)` per input,
+/// where `ptr` is a raw CUDA device pointer as returned by
+/// `Torchx.data_ptr/1`.
+///
+/// # Safety
+/// The caller (Elixir) must keep the tensor resource that `ptr` came from
+/// alive (unreleased/uncollected) for the duration of this call -- `ptr`
+/// itself carries no lifetime and this function has no way to verify it's
+/// still valid.
+pub fn run_cuda(
+    model: ResourceArc<OrtexModel>,
+    inputs: &[(u64, Vec<i64>, String, usize, i32)],
+) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError>> {
+    let session: &mut Session = &mut model.session.lock().unwrap();
+
+    let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
+
+    for (ptr, shape, dtype_str, dtype_bits, device_index) in inputs.iter() {
+        let info = MemoryInfo::new(AllocationDevice::CUDA, *device_index, AllocatorType::Device, MemoryType::Default)?;
+        let data = *ptr as usize as *mut ort_sys::c_void;
+
+        macro_rules! make_cuda_input {
+            ($t:ty) => {{
+                // SAFETY: `data` must point to a live CUDA allocation for the
+                // duration of this call. The Elixir caller is responsible for
+                // keeping the backing Torchx tensor resource alive (see
+                // Ortex.run/2's dispatch to this function) across the call.
+                let tensor_ref: TensorRefMut<'_, $t> =
+                    unsafe { TensorRefMut::from_raw(info.clone(), data, Shape::from(shape.clone()))? };
+                tensor_ref.into()
+            }};
+        }
+
+        let v: ort::session::SessionInputValue<'_> = match (dtype_str.as_ref(), *dtype_bits) {
+            ("f", 32) => make_cuda_input!(f32),
+            ("f", 16) => make_cuda_input!(half::f16),
+            _ => return Err(format!("unsupported cuda dtype ({}, {})", dtype_str, dtype_bits).into()),
         };
         ortified_inputs.push(v);
     }

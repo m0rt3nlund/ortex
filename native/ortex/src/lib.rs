@@ -58,6 +58,14 @@ fn run_binary<'a>(
     model::run_binary(model, &inputs).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
 }
 
+#[rustler::nif(schedule = "DirtyIo")]
+fn run_cuda(
+    model: ResourceArc<model::OrtexModel>,
+    inputs: Vec<(u64, Vec<i64>, String, usize, i32)>,
+) -> NifResult<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>> {
+    model::run_cuda(model, &inputs).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
+}
+
 #[rustler::nif(schedule = "DirtyCpu")]
 fn from_binary(bin: Binary, shape: Term, dtype: Term) -> NifResult<ResourceArc<OrtexTensor>> {
     let shape: Vec<usize> = rustler::types::tuple::get_tuple(shape)?

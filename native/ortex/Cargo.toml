@@ -20,7 +20,7 @@ num-traits = "0.2.19"
 ort = {version = "2.0.0-rc.10", features = [
   "half",
   "cuda",
-  "directml",
+  # "directml",
   "tensorrt", 
   # "coreml",
 ]}
@@ -36,6 +36,6 @@ wide = "0.8.1"
 [features]
 # ONNXRuntime Execution providers
 # coreml = ["ort/coreml"]
-directml = ["ort/directml"]
+# directml = ["ort/directml"]
 cuda = ["ort/cuda"]
 tensorrt = ["ort/tensorrt"]
