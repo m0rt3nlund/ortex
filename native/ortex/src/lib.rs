@@ -111,7 +111,7 @@ pub fn reshape<'a>(
     Ok(ResourceArc::new(tensor.reshape(shape)?))
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 pub fn prepare_image<'a>(
     env: Env<'a>,
     bin: Binary,
@@ -122,7 +122,7 @@ pub fn prepare_image<'a>(
     image::prepare_image(env, bin, width, height, size)
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 pub fn prepare_resized_image<'a>(
     env: Env<'a>,
     bin: Binary,
