@@ -126,18 +126,14 @@ fn resize_and_normalize_to_tensor(
             .map_err(|_| "Failed to load image")?
             .to_rgb8()
     } else {
-        // Raw BGR HWC u8 from Evision.Mat.to_binary()
-        let orig_raw = input.as_slice();
-        let mut rgb_raw = vec![0u8; input.len()];
-        for y in 0..height as usize {
-            for x in 0..width as usize {
-                let offset = (y * width as usize + x) * 3;
-                rgb_raw[offset] = orig_raw[offset + 2]; // R = BGR[2]
-                rgb_raw[offset + 1] = orig_raw[offset + 1]; // G = BGR[1]
-                rgb_raw[offset + 2] = orig_raw[offset]; // B = BGR[0]
-            }
-        }
-        ImageBuffer::from_raw(width, height, rgb_raw).ok_or("Invalid raw dimensions")?
+        // Raw BGR HWC u8 from Evision.Mat.to_binary(). NOT swapped to RGB
+        // here -- the CHW-building loop below does the one authoritative
+        // BGR->RGB swap. (This used to also swap here, which combined with
+        // the loop's swap cancelled out to BGR order reaching the model --
+        // a real bug: detections were being run on channel-swapped input.)
+        // Resize/pad below are channel-order-agnostic, so it's safe to defer
+        // the swap to the loop that's already touching every pixel anyway.
+        ImageBuffer::from_raw(width, height, input).ok_or("Invalid raw dimensions")?
     };
     //println!("Load time: {:?}", start_load.elapsed());
 
