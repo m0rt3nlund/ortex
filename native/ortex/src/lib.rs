@@ -5,13 +5,18 @@
 //! directly.
 
 mod constants;
+mod cuda_preprocess;
 mod image;
 mod model;
 mod tensor;
 mod utils;
 
+use cuda_preprocess::CudaPreprocessedImage;
 use model::OrtexModel;
+use rustler::Resource;
 use tensor::OrtexTensor;
+
+impl Resource for CudaPreprocessedImage {}
 
 use rustler::types::Binary;
 use rustler::ResourceArc;
@@ -136,6 +141,31 @@ pub fn prepare_resized_image<'a>(
     image::prepare_resized_image(env, bin, scaled_width, scaled_height, canvas_size, pad_x, pad_y, pad_value)
 }
 
+///  normalize/transpose/pad on GPU via a custom CUDA kernel
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn prepare_resized_image_cuda(
+    bin: Binary,
+    scaled_width: i32,
+    scaled_height: i32,
+    canvas_size: i32,
+    pad_x: i32,
+    pad_y: i32,
+    pad_value: u8,
+) -> NifResult<(u64, Vec<i64>, i32, ResourceArc<CudaPreprocessedImage>)> {
+    let (ptr, shape, device_ordinal, keepalive) = cuda_preprocess::prepare_resized_bgr_cuda(
+        bin.as_slice(),
+        scaled_width,
+        scaled_height,
+        canvas_size,
+        pad_x,
+        pad_y,
+        pad_value,
+    )
+    .map_err(|e| rustler::Error::Term(Box::new(e)))?;
+
+    Ok((ptr, shape, device_ordinal, ResourceArc::new(keepalive)))
+}
+
 #[rustler::nif]
 pub fn create_mask<'a>(
     env: Env<'a>,
@@ -167,7 +197,9 @@ pub fn concatenate<'a>(
 
 pub fn on_load(env: Env) -> bool {
     tracing_subscriber::fmt::init();
-    env.register::<OrtexModel>().is_ok() && env.register::<OrtexTensor>().is_ok()
+    env.register::<OrtexModel>().is_ok()
+        && env.register::<OrtexTensor>().is_ok()
+        && env.register::<CudaPreprocessedImage>().is_ok()
 }
 
 rustler::init!(

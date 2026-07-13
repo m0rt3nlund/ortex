@@ -13,6 +13,7 @@ path = "src/lib.rs"
 resolver = "2"
 
 [dependencies]
+cudarc = {version = "0.19", default-features = false, features = ["cuda-12060", "driver", "nvrtc", "dynamic-loading"]}
 half = "2.7.1"
 image = "0.25"
 ndarray = "0.16.1"

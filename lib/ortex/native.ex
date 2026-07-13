@@ -6,7 +6,6 @@ defmodule Ortex.Native do
   # We have to compile the crate before `use Rustler` compiles the crate since
   # cargo downloads the onnxruntime shared libraries and they are not available
   # to load or copy into Elixir's during the on_load or Elixir compile steps.
-  # In the future, this may be configurable in Rustler.
   if Version.compare(@rustler_version, "0.30.0") in [:gt, :eq] do
     Rustler.Compiler.compile_crate(:ortex, Application.compile_env(:ortex, __MODULE__, []),
       otp_app: :ortex,
@@ -46,6 +45,17 @@ defmodule Ortex.Native do
   def prepare_image(_binary, _width, _height, _size), do: :erlang.nif_error(:nif_not_loaded)
 
   def prepare_resized_image(
+        _binary,
+        _scaled_width,
+        _scaled_height,
+        _canvas_size,
+        _pad_x,
+        _pad_y,
+        _pad_value
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
+
+  def prepare_resized_image_cuda(
         _binary,
         _scaled_width,
         _scaled_height,

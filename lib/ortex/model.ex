@@ -59,6 +59,21 @@ defmodule Ortex.Model do
     end
   end
 
+  # A pre-built raw CUDA pointer
+  @doc false
+  def run(%Ortex.Model{reference: model}, %Ortex.CudaTensor{} = cuda_tensor) do
+    result =
+      Ortex.Native.run_cuda(model, [
+        {cuda_tensor.ptr, cuda_tensor.shape, cuda_tensor.dtype_str, cuda_tensor.dtype_bits,
+         cuda_tensor.device_index}
+      ])
+
+    keepalive = cuda_tensor.keepalive
+    _ = keepalive
+
+    pack_output(result)
+  end
+
   @doc false
   def run(%Ortex.Model{} = model, tensor) when not is_tuple(tensor) do
     run(model, {tensor})
@@ -74,10 +89,6 @@ defmodule Ortex.Model do
 
         result = Ortex.Native.run_cuda(model, cuda_inputs)
 
-        # `keepalives` holds the Torchx tensor resource(s) that the raw
-        # pointers passed to run_cuda above point into. Referencing it here,
-        # after the NIF call returns, keeps the BEAM from collecting that
-        # storage while the NIF call is in flight.
         _ = keepalives
         result
       else
@@ -89,13 +100,17 @@ defmodule Ortex.Model do
         Ortex.Native.run_binary(model, inputs)
       end
 
+    pack_output(raw_output)
+  end
+
+  # Pack raw_output ({ref, shape, dtype_atom, dtype_bits} tuples
+  defp pack_output(raw_output) do
     output =
       case raw_output do
         {:error, msg} -> raise msg
         output -> output
       end
 
-    # Pack the output into new Ortex.Backend tensor(s)
     output
     |> Enum.map(fn {ref, shape, dtype_atom, dtype_bits} ->
       %Nx.Tensor{
@@ -109,16 +124,10 @@ defmodule Ortex.Model do
   end
 
   # Only take the zero-copy path for tensors already GPU-resident via Torchx
-  # -- checked via __struct__ rather than a %Torchx.Backend{} pattern so
-  # Ortex doesn't need a compile-time dependency on :torchx. Anything else
-  # (CPU Torchx tensors, Nx.BinaryBackend, etc.) falls back to the existing
-  # to_binary path, which is already efficient for host-resident data.
   defp cuda_backed?(%Nx.Tensor{data: %{__struct__: Torchx.Backend, ref: {:cuda, _}}}), do: true
   defp cuda_backed?(_), do: false
 
-  # Returns `{{ptr, shape, dtype_str, dtype_bits, device_index}, keepalive}`.
-  # `keepalive` must be kept referenced by the caller until the NIF call
-  # using `ptr` has returned -- see run/2 above.
+  # Returns `{{ptr, shape, dtype_str, dtype_bits, device_index}, keepalive}`
   defp cuda_input(%Nx.Tensor{data: %{ref: ref}, shape: shape, type: {type_atom, bits}}) do
     {ptr, _shape, _dtype, {_device_type, device_index}, keepalive} = Torchx.data_ptr(ref)
     {{ptr, Tuple.to_list(shape), Atom.to_string(type_atom), bits, device_index}, keepalive}
