@@ -12,6 +12,7 @@
 
 # Ignore .fetch files in case you like to edit your project deps locally.
 /.fetch
+/.claude
 
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump
@@ -24,3 +25,12 @@ ortex-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# Priv output
+/priv/native
+
+/lib/framework
+/lib/mix
+compile.bat
+compile.sh
+test.bat

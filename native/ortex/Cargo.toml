@@ -1,26 +1,44 @@
 [package]
+authors = []
+edition = "2021"
 name = "ortex"
 version = "0.1.0"
-authors = []
-edition = "2018"
 
 [lib]
+crate-type = ["cdylib"]
 name = "ortex"
 path = "src/lib.rs"
-crate-type = ["cdylib"]
+
+[workspace]
+resolver = "2"
 
 [dependencies]
-rustler = "0.29.0"
-ort = { version = "2.0.0-rc.8" }
+half = "2.7.1"
+image = "0.25"
 ndarray = "0.16.1"
-half = "2.2.1"
-tracing-subscriber = { version = "0.3", features = [ "env-filter", "fmt" ] }
-num-traits = "0.2.15"
-rustls = "0.22.4"
+num-traits = "0.2.19"
+ort = {version = "2.0.0-rc.10", features = [
+  "half",
+  "cuda",
+  # "directml",
+  "tensorrt", 
+  # "coreml",
+]}
+ort-sys = {version = "=2.0.0-rc.10", default-features = false}
+rustler = "0.37"
+rustls = "0.23.34"
+tracing-subscriber = {version = "0.3", features = ["env-filter", "fmt"]}
+wide = "0.8.1"
+
+# [profile.dev]
+# debug = true # Enables full DWARF/PDB symbols (default on most platforms)
+
+[profile.dev]
+opt-level = 3
 
 [features]
 # ONNXRuntime Execution providers
-directml = ["ort/directml"]
-coreml = ["ort/coreml"]
+# coreml = ["ort/coreml"]
+# directml = ["ort/directml"]
 cuda = ["ort/cuda"]
 tensorrt = ["ort/tensorrt"]

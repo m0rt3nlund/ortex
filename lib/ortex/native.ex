@@ -29,6 +29,8 @@ defmodule Ortex.Native do
     do: :erlang.nif_error(:nif_not_loaded)
 
   def run(_model, _inputs), do: :erlang.nif_error(:nif_not_loaded)
+  def run_binary(_model, _inputs), do: :erlang.nif_error(:nif_not_loaded)
+  def run_cuda(_model, _inputs), do: :erlang.nif_error(:nif_not_loaded)
   def from_binary(_bin, _shape, _type), do: :erlang.nif_error(:nif_not_loaded)
   def to_binary(_reference, _bits, _limit), do: :erlang.nif_error(:nif_not_loaded)
   def show_session(_model), do: :erlang.nif_error(:nif_not_loaded)
@@ -39,4 +41,18 @@ defmodule Ortex.Native do
   def reshape(_tensor, _shape), do: :erlang.nif_error(:nif_not_loaded)
 
   def concatenate(_tensors_refs, _type, _axis), do: :erlang.nif_error(:nif_not_loaded)
+
+  def create_mask(_coefficients, _prototypes_bin, _proto_shape_term, _threshold), do: :erlang.nif_error(:nif_not_loaded)
+  def prepare_image(_binary, _width, _height, _size), do: :erlang.nif_error(:nif_not_loaded)
+
+  def prepare_resized_image(
+        _binary,
+        _scaled_width,
+        _scaled_height,
+        _canvas_size,
+        _pad_x,
+        _pad_y,
+        _pad_value
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
 end

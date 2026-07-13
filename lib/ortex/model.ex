@@ -18,17 +18,44 @@ defmodule Ortex.Model do
   `nil` values represent dynamic dimensions
   """
 
-  @enforce_keys [:reference]
-  defstruct [:reference]
+  @enforce_keys [:reference, :inputs, :outputs]
+  defstruct [:reference, :inputs, :outputs]
 
   @doc false
   def load(path, eps \\ [:cpu], opt \\ 3) do
-    case Ortex.Native.init(path, eps, opt) do
+    normalized =
+      Enum.map(eps, fn
+        ep when is_atom(ep) ->
+          {ep, []}
+
+        {ep, opts} ->
+          {ep, Enum.map(opts, fn {k, v} -> {Atom.to_string(k), to_string(v)} end)}
+      end)
+
+    case Ortex.Native.init(path, normalized, opt) do
       {:error, msg} ->
         raise msg
 
       model ->
-        %Ortex.Model{reference: model}
+        {inputs, outputs} =
+          Ortex.Native.show_session(model)
+          |> case do
+            {inputs, outputs} ->
+              inputs =
+                inputs
+                |> Enum.reduce(%{}, fn {id, _, shape}, acc -> Map.put(acc, id, shape) end)
+
+              outputs =
+                outputs
+                |> Enum.reduce(%{}, fn {id, _, shape}, acc -> Map.put(acc, id, shape) end)
+
+              {inputs, outputs}
+
+            _ ->
+              {[], []}
+          end
+
+        %Ortex.Model{reference: model, inputs: inputs, outputs: outputs}
     end
   end
 
@@ -39,15 +66,31 @@ defmodule Ortex.Model do
 
   @doc false
   def run(%Ortex.Model{reference: model}, tensors) do
-    # Move tensors into Ortex backend and pass the reference to the Ortex NIF
+    tensor_list = Tuple.to_list(tensors)
+
+    raw_output =
+      if Enum.all?(tensor_list, &cuda_backed?/1) do
+        {cuda_inputs, keepalives} = tensor_list |> Enum.map(&cuda_input/1) |> Enum.unzip()
+
+        result = Ortex.Native.run_cuda(model, cuda_inputs)
+
+        # `keepalives` holds the Torchx tensor resource(s) that the raw
+        # pointers passed to run_cuda above point into. Referencing it here,
+        # after the NIF call returns, keeps the BEAM from collecting that
+        # storage while the NIF call is in flight.
+        _ = keepalives
+        result
+      else
+        inputs =
+          Enum.map(tensor_list, fn %Nx.Tensor{shape: shape, type: {type_atom, bits}} = tensor ->
+            {Nx.to_binary(tensor), Tuple.to_list(shape), Atom.to_string(type_atom), bits}
+          end)
+
+        Ortex.Native.run_binary(model, inputs)
+      end
+
     output =
-      case Ortex.Native.run(
-             model,
-             tensors
-             |> Tuple.to_list()
-             |> Enum.map(fn x -> x |> Nx.backend_transfer(Ortex.Backend) end)
-             |> Enum.map(fn %Nx.Tensor{data: %Ortex.Backend{ref: x}} -> x end)
-           ) do
+      case raw_output do
         {:error, msg} -> raise msg
         output -> output
       end
@@ -63,6 +106,39 @@ defmodule Ortex.Model do
       }
     end)
     |> List.to_tuple()
+  end
+
+  # Only take the zero-copy path for tensors already GPU-resident via Torchx
+  # -- checked via __struct__ rather than a %Torchx.Backend{} pattern so
+  # Ortex doesn't need a compile-time dependency on :torchx. Anything else
+  # (CPU Torchx tensors, Nx.BinaryBackend, etc.) falls back to the existing
+  # to_binary path, which is already efficient for host-resident data.
+  defp cuda_backed?(%Nx.Tensor{data: %{__struct__: Torchx.Backend, ref: {:cuda, _}}}), do: true
+  defp cuda_backed?(_), do: false
+
+  # Returns `{{ptr, shape, dtype_str, dtype_bits, device_index}, keepalive}`.
+  # `keepalive` must be kept referenced by the caller until the NIF call
+  # using `ptr` has returned -- see run/2 above.
+  defp cuda_input(%Nx.Tensor{data: %{ref: ref}, shape: shape, type: {type_atom, bits}}) do
+    {ptr, _shape, _dtype, {_device_type, device_index}, keepalive} = Torchx.data_ptr(ref)
+    {{ptr, Tuple.to_list(shape), Atom.to_string(type_atom), bits, device_index}, keepalive}
+  end
+
+  def create_mask(coefficients, mask_prototypes, threshold \\ 0.5) do
+    prototypes_bin = Nx.to_binary(mask_prototypes)
+    # Tuple like {1, 32, 240, 240}
+    {_, _, width, height} = proto_shape = Nx.shape(mask_prototypes)
+
+    Ortex.Native.create_mask(coefficients, prototypes_bin, proto_shape, threshold)
+    |> case do
+      binary_mask when is_binary(binary_mask) ->
+        binary_mask
+        |> Nx.from_binary(:u8)
+        |> Nx.reshape({width, height})
+
+      error ->
+        error
+    end
   end
 end
 

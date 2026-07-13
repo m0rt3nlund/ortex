@@ -5,6 +5,7 @@
 //! directly.
 
 mod constants;
+mod image;
 mod model;
 mod tensor;
 mod utils;
@@ -12,15 +13,15 @@ mod utils;
 use model::OrtexModel;
 use tensor::OrtexTensor;
 
-use rustler::resource::ResourceArc;
 use rustler::types::Binary;
+use rustler::ResourceArc;
 use rustler::{Atom, Env, NifResult, Term};
 
 #[rustler::nif(schedule = "DirtyIo")]
 fn init(
     env: Env,
     model_path: String,
-    eps: Vec<Atom>,
+    eps: Vec<(Atom, Vec<(String, String)>)>,
     opt: i32,
 ) -> NifResult<ResourceArc<model::OrtexModel>> {
     let eps = utils::map_eps(env, eps);
@@ -45,6 +46,24 @@ fn run(
     inputs: Vec<ResourceArc<OrtexTensor>>,
 ) -> NifResult<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>> {
     model::run(model, inputs).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn run_binary<'a>(
+    env: Env<'a>,
+    model: ResourceArc<model::OrtexModel>,
+    inputs: Vec<(Binary<'a>, Vec<usize>, String, usize)>,
+) -> NifResult<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>> {
+    let _ = env;
+    model::run_binary(model, &inputs).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn run_cuda(
+    model: ResourceArc<model::OrtexModel>,
+    inputs: Vec<(u64, Vec<i64>, String, usize, i32)>,
+) -> NifResult<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>> {
+    model::run_cuda(model, &inputs).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -92,6 +111,48 @@ pub fn reshape<'a>(
     Ok(ResourceArc::new(tensor.reshape(shape)?))
 }
 
+#[rustler::nif(schedule = "DirtyCpu")]
+pub fn prepare_image<'a>(
+    env: Env<'a>,
+    bin: Binary,
+    width: u32,
+    height: u32,
+    size: u32,
+) -> NifResult<Term<'a>> {
+    image::prepare_image(env, bin, width, height, size)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+pub fn prepare_resized_image<'a>(
+    env: Env<'a>,
+    bin: Binary,
+    scaled_width: u32,
+    scaled_height: u32,
+    canvas_size: u32,
+    pad_x: u32,
+    pad_y: u32,
+    pad_value: u8,
+) -> NifResult<Term<'a>> {
+    image::prepare_resized_image(env, bin, scaled_width, scaled_height, canvas_size, pad_x, pad_y, pad_value)
+}
+
+#[rustler::nif]
+pub fn create_mask<'a>(
+    env: Env<'a>,
+    coefficients: Vec<f32>,
+    prototypes_bin: rustler::Binary,
+    proto_shape_term: Term<'a>, // Elixir tuple {batch, m, h, w} -> Vec<usize>
+    threshold: f32,
+) -> Result<Term<'a>, rustler::Error> {
+    model::create_mask(
+        env,
+        coefficients,
+        prototypes_bin,
+        proto_shape_term,
+        threshold,
+    )
+}
+
 #[rustler::nif]
 pub fn concatenate<'a>(
     tensors: Vec<ResourceArc<OrtexTensor>>,
@@ -104,21 +165,12 @@ pub fn concatenate<'a>(
     Ok(ResourceArc::new(concatted))
 }
 
+pub fn on_load(env: Env) -> bool {
+    tracing_subscriber::fmt::init();
+    env.register::<OrtexModel>().is_ok() && env.register::<OrtexTensor>().is_ok()
+}
+
 rustler::init!(
     "Elixir.Ortex.Native",
-    [
-        run,
-        init,
-        from_binary,
-        to_binary,
-        show_session,
-        slice,
-        reshape,
-        concatenate
-    ],
-    load = |env: Env, _| {
-        rustler::resource!(OrtexModel, env);
-        rustler::resource!(OrtexTensor, env);
-        true
-    }
+    load = |env: Env, _term: Term| -> bool { on_load(env) }
 );

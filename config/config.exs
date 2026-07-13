@@ -10,9 +10,10 @@ config :ortex,
 # based on the OS we're running on
 ortex_features =
   case :os.type() do
-    {:win32, _} -> ["directml"]
+    {:win32, _} -> ["cuda", "tensorrt"]
     {:unix, :darwin} -> ["coreml"]
     {:unix, _} -> ["cuda", "tensorrt"]
   end
 
+#config :nx, default_backend: {Torchx.Backend, device: :cuda}
 config :ortex, Ortex.Native, features: ortex_features

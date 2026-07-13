@@ -7,14 +7,15 @@ use ndarray::{ArrayViewMut, Ix, IxDyn};
 
 use ndarray::ShapeError;
 
-use rustler::resource::ResourceArc;
 use rustler::types::Binary;
+use rustler::ResourceArc;
 use rustler::{Atom, Env, NifResult};
 
-use ort::{ExecutionProviderDispatch, GraphOptimizationLevel};
+use ort::execution_providers::ExecutionProviderDispatch;
+use ort::session::builder::GraphOptimizationLevel;
 
 /// A faster (unsafe) way of creating an Array from an Erlang binary
-fn initialize_from_raw_ptr<T>(ptr: *const T, shape: &[Ix]) -> ArrayViewMut<T, IxDyn> {
+fn initialize_from_raw_ptr<T>(ptr: *const T, shape: &[Ix]) -> ArrayViewMut<'_, T, IxDyn> {
     let array = unsafe { ArrayViewMut::from_shape_ptr(shape, ptr as *mut T) };
     array
 }
@@ -90,20 +91,66 @@ pub fn to_binary<'a>(
     Ok(reference.make_binary(env, |x| x.to_bytes()))
 }
 
-/// Takes a vec of Atoms and transforms them into a vec of ExecutionProvider Enums
-pub fn map_eps(env: rustler::env::Env, eps: Vec<Atom>) -> Vec<ExecutionProviderDispatch> {
-    eps.iter()
-        .map(|e| match &e.to_term(env).atom_to_string().unwrap()[..] {
-            CPU => ort::CPUExecutionProvider::default().build(),
-            CUDA => ort::CUDAExecutionProvider::default().build(),
-            TENSORRT => ort::TensorRTExecutionProvider::default().build(),
-            ACL => ort::ACLExecutionProvider::default().build(),
-            ONEDNN => ort::OneDNNExecutionProvider::default().build(),
-            COREML => ort::CoreMLExecutionProvider::default().build(),
-            DIRECTML => ort::DirectMLExecutionProvider::default().build(),
-            ROCM => ort::ROCmExecutionProvider::default().build(),
-            _ => ort::CPUExecutionProvider::default().build(),
-        })
+/// Takes a vec of (Atom, options) pairs and transforms them into ExecutionProviderDispatches.
+/// Options are flat string key-value pairs so they can be passed generically from Elixir.
+pub fn map_eps(
+    env: rustler::env::Env,
+    eps: Vec<(Atom, Vec<(String, String)>)>,
+) -> Vec<ExecutionProviderDispatch> {
+    eps.into_iter()
+        .map(
+            |(e, opts)| match &e.to_term(env).atom_to_string().unwrap()[..] {
+                CPU => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
+                CUDA => ort::execution_providers::cuda::CUDAExecutionProvider::default()
+                    .build()
+                    .error_on_failure(),
+                TENSORRT => {
+                    let mut workspace_size: usize = 1_073_741_824;
+                    let mut engine_cache = false;
+                    let mut engine_cache_path = String::new();
+                    let mut fp16 = false;
+                    let mut int8 = false;
+                    for (k, v) in &opts {
+                        match k.as_str() {
+                            "max_workspace_size" => {
+                                workspace_size = v.parse().unwrap_or(workspace_size)
+                            }
+                            "engine_cache" => engine_cache = v == "true",
+                            "engine_cache_path" => engine_cache_path = v.clone(),
+                            "fp16" => fp16 = v == "true",
+                            "int8" => int8 = v == "true",
+                            _ => {}
+                        }
+                    }
+                    let ep =
+                        ort::execution_providers::tensorrt::TensorRTExecutionProvider::default()
+                            .with_max_workspace_size(workspace_size)
+                            .with_engine_cache(engine_cache)
+                            .with_fp16(fp16)
+                            .with_int8(int8);
+                    let ep = if engine_cache_path.is_empty() {
+                        ep
+                    } else {
+                        ep.with_engine_cache_path(engine_cache_path)
+                    };
+                    ep.build().error_on_failure()
+                }
+                ACL => ort::execution_providers::acl::ACLExecutionProvider::default().build(),
+                ONEDNN => {
+                    ort::execution_providers::onednn::OneDNNExecutionProvider::default().build()
+                }
+                COREML => {
+                    ort::execution_providers::coreml::CoreMLExecutionProvider::default().build()
+                }
+                DIRECTML => {
+                    ort::execution_providers::directml::DirectMLExecutionProvider::default()
+                        .build()
+                        .error_on_failure()
+                }
+                ROCM => ort::execution_providers::rocm::ROCmExecutionProvider::default().build(),
+                _ => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
+            },
+        )
         .collect()
 }
 
@@ -117,11 +164,11 @@ pub fn map_opt_level(opt: i32) -> GraphOptimizationLevel {
     }
 }
 
-pub fn is_bool_input(inp: &ort::ValueType) -> bool {
+pub fn is_bool_input(inp: &ort::value::ValueType) -> bool {
     match inp {
-        ort::ValueType::Tensor { ty, .. } => ty == &ort::TensorElementType::Bool,
-        ort::ValueType::Map { value, .. } => value == &ort::TensorElementType::Bool,
-        ort::ValueType::Sequence(boxed_input) => is_bool_input(boxed_input),
-        ort::ValueType::Optional(boxed_input) => is_bool_input(boxed_input),
+        ort::value::ValueType::Tensor { ty, .. } => ty == &ort::tensor::TensorElementType::Bool,
+        ort::value::ValueType::Map { value, .. } => value == &ort::tensor::TensorElementType::Bool,
+        ort::value::ValueType::Sequence(boxed_input) => is_bool_input(boxed_input),
+        ort::value::ValueType::Optional(boxed_input) => is_bool_input(boxed_input),
     }
 }
