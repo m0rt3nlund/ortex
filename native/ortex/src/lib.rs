@@ -166,7 +166,8 @@ pub fn prepare_resized_image_cuda(
     Ok((ptr, shape, device_ordinal, ResourceArc::new(keepalive)))
 }
 
-#[rustler::nif]
+// Sigmoid over the full prototype array is real CPU work, not sub-ms.
+#[rustler::nif(schedule = "DirtyCpu")]
 pub fn create_mask<'a>(
     env: Env<'a>,
     coefficients: Vec<f32>,
