@@ -41,7 +41,7 @@ defmodule Ortex.Native do
 
   def concatenate(_tensors_refs, _type, _axis), do: :erlang.nif_error(:nif_not_loaded)
 
-  def create_mask(_coefficients, _prototypes_bin, _proto_shape_term, _threshold), do: :erlang.nif_error(:nif_not_loaded)
+  def create_mask(_coefficients, _prototypes_bin, _proto_shape_term, _dtype_bits, _threshold), do: :erlang.nif_error(:nif_not_loaded)
   def prepare_image(_binary, _width, _height, _size), do: :erlang.nif_error(:nif_not_loaded)
 
   def prepare_resized_image(
@@ -59,10 +59,12 @@ defmodule Ortex.Native do
         _binary,
         _scaled_width,
         _scaled_height,
-        _canvas_size,
+        _canvas_width,
+        _canvas_height,
         _pad_x,
         _pad_y,
-        _pad_value
+        _pad_value,
+        _half
       ),
       do: :erlang.nif_error(:nif_not_loaded)
 end

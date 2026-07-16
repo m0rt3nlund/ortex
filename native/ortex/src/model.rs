@@ -35,14 +35,8 @@ pub struct OrtexModel {
     pub session: Mutex<ort::session::Session>,
 }
 impl Resource for OrtexModel {}
-
-// Since we're only using the session for inference and
-// inference is threadsafe, this Sync is safe. Additionally,
-// Environment is global and also threadsafe
-// https://github.com/microsoft/onnxruntime/issues/114
 unsafe impl Sync for OrtexModel {}
 
-/// Creates a model given the path to the model and vector of execution providers.
 /// The execution providers are Atoms from Erlang/Elixir.
 pub fn init(
     model_path: String,
@@ -63,9 +57,6 @@ pub fn init(
     Ok(state)
 }
 
-/// Returns input/output information about a model. The result is a Tuple of
-/// `inputs` and `outputs` with elements of `(Name, Type, Dimension)` where
-/// `Dimension` elements of -1 are dynamic.
 pub fn show(
     model: ResourceArc<OrtexModel>,
 ) -> (
@@ -94,7 +85,6 @@ pub fn show(
 }
 
 /// Runs the model with the given inputs. Returns a vector of tensors. Use `model::show`
-/// to see what the model expects for input and output shapes.
 pub fn run(
     model: ResourceArc<OrtexModel>,
     inputs: Vec<ResourceArc<OrtexTensor>>,
@@ -148,9 +138,6 @@ pub fn run(
     Ok(collected_outputs)
 }
 
-/// Like `run`, but takes raw BEAM binaries instead of OrtexTensor ResourceArcs.
-/// Creates zero-copy TensorRef views directly from BEAM binary pointers, avoiding
-/// the separate from_binary NIF call and the ndarray heap copy entirely.
 pub fn run_binary<'a>(
     model: ResourceArc<OrtexModel>,
     inputs: &[(Binary<'a>, Vec<usize>, String, usize)],
@@ -215,22 +202,7 @@ pub fn run_binary<'a>(
     Ok(collected_outputs)
 }
 
-/// Like `run_binary`, but takes a raw CUDA device pointer (from
-/// `Torchx.data_ptr/1`) instead of a BEAM binary, for each input. Avoids the
-/// device->host->device round trip that `run`/`run_binary` incur when the
-/// input tensor is already GPU-resident (e.g. preprocessed via Torchx on
-/// `:cuda`): those paths always land the data in a host binary first, which
-/// onnxruntime then re-uploads to the GPU internally.
-///
-/// `inputs` is `(ptr, shape, dtype_str, dtype_bits, device_index)` per input,
-/// where `ptr` is a raw CUDA device pointer as returned by
-/// `Torchx.data_ptr/1`.
-///
-/// # Safety
-/// The caller (Elixir) must keep the tensor resource that `ptr` came from
-/// alive (unreleased/uncollected) for the duration of this call -- `ptr`
-/// itself carries no lifetime and this function has no way to verify it's
-/// still valid.
+
 pub fn run_cuda(
     model: ResourceArc<OrtexModel>,
     inputs: &[(u64, Vec<i64>, String, usize, i32)],
@@ -277,11 +249,28 @@ pub fn run_cuda(
     Ok(collected_outputs)
 }
 
+fn bytes_to_f32_vec(bytes: &[u8], dtype_bits: usize, count: usize) -> Result<Vec<f32>, String> {
+    match dtype_bits {
+        32 => Ok(
+            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, count) }.to_vec(),
+        ),
+        16 => Ok(
+            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const half::f16, count) }
+                .iter()
+                .map(|x| x.to_f32())
+                .collect(),
+        ),
+        other => Err(format!("unsupported dtype_bits: {other}")),
+    }
+}
+
 pub fn create_mask<'a>(
     env: Env<'a>,
+    // Decoded from Erlang terms (not reinterpreted raw bytes)
     coefficients: Vec<f32>,
     prototypes_bin: rustler::Binary,
     proto_shape_term: Term<'a>, // Elixir tuple {batch, m, h, w} -> Vec<usize>
+    dtype_bits: usize,
     threshold: f32,
 ) -> Result<Term<'a>, rustler::Error> {
     // Decode as 4-element tuple directly
@@ -293,7 +282,14 @@ pub fn create_mask<'a>(
 
     // Validate 4D
     let expected_proto_size = batch_size * m * height * width;
-    let f32_size = std::mem::size_of::<f32>();
+    let elem_size = match dtype_bits {
+        32 => std::mem::size_of::<f32>(),
+        16 => std::mem::size_of::<half::f16>(),
+        _ => {
+            println!("Unsupported prototypes dtype_bits: {}", dtype_bits);
+            return Err(rustler::Error::BadArg);
+        }
+    };
 
     // Validate coefficients
     if coefficients.len() != m {
@@ -307,17 +303,17 @@ pub fn create_mask<'a>(
 
     // Validate prototypes binary
     let protos_bytes = prototypes_bin.as_slice();
-    if protos_bytes.len() != expected_proto_size * f32_size {
+    if protos_bytes.len() != expected_proto_size * elem_size {
         println!(
             "Invalid prototypes binary size: {}, expected: {}",
             protos_bytes.len(),
-            expected_proto_size * f32_size
+            expected_proto_size * elem_size
         );
         return Err(rustler::Error::BadArg);
     }
-    let protos_slice: &[f32] = unsafe {
-        std::slice::from_raw_parts(protos_bytes.as_ptr() as *const f32, expected_proto_size)
-    };
+    let protos_vec = bytes_to_f32_vec(protos_bytes, dtype_bits, expected_proto_size)
+        .map_err(|_| rustler::Error::BadArg)?;
+    let protos_slice: &[f32] = &protos_vec;
 
     // Assume single batch
     if batch_size != 1 {
@@ -355,4 +351,38 @@ pub fn create_mask<'a>(
     let mut new_bin = NewBinary::new(env, binary_vec.len());
     new_bin.as_mut_slice().copy_from_slice(&binary_vec);
     Ok(new_bin.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bytes_to_f32_vec;
+
+    #[test]
+    fn bytes_to_f32_vec_f32_roundtrip() {
+        let values: [f32; 4] = [0.0, 1.5, -2.25, 3.0];
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+
+        let out = bytes_to_f32_vec(&bytes, 32, values.len()).expect("f32 path should succeed");
+        assert_eq!(out, values);
+    }
+
+    #[test]
+    fn bytes_to_f32_vec_f16_widens_to_f32() {
+        let values: [half::f16; 4] = [
+            half::f16::from_f32(0.0),
+            half::f16::from_f32(1.5),
+            half::f16::from_f32(-2.25),
+            half::f16::from_f32(3.0),
+        ];
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+
+        let out = bytes_to_f32_vec(&bytes, 16, values.len()).expect("f16 path should succeed");
+        assert_eq!(out, vec![0.0f32, 1.5, -2.25, 3.0]);
+    }
+
+    #[test]
+    fn bytes_to_f32_vec_rejects_unknown_dtype() {
+        let bytes = [0u8; 8];
+        assert!(bytes_to_f32_vec(&bytes, 8, 2).is_err());
+    }
 }

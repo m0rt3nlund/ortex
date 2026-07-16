@@ -143,27 +143,39 @@ pub fn prepare_resized_image<'a>(
 
 ///  normalize/transpose/pad on GPU via a custom CUDA kernel
 #[rustler::nif(schedule = "DirtyIo")]
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_resized_image_cuda(
     bin: Binary,
     scaled_width: i32,
     scaled_height: i32,
-    canvas_size: i32,
+    canvas_width: i32,
+    canvas_height: i32,
     pad_x: i32,
     pad_y: i32,
     pad_value: u8,
-) -> NifResult<(u64, Vec<i64>, i32, ResourceArc<CudaPreprocessedImage>)> {
-    let (ptr, shape, device_ordinal, keepalive) = cuda_preprocess::prepare_resized_bgr_cuda(
-        bin.as_slice(),
-        scaled_width,
-        scaled_height,
-        canvas_size,
-        pad_x,
-        pad_y,
-        pad_value,
-    )
-    .map_err(|e| rustler::Error::Term(Box::new(e)))?;
+    half: bool,
+) -> NifResult<(u64, Vec<i64>, i32, usize, ResourceArc<CudaPreprocessedImage>)> {
+    let (ptr, shape, device_ordinal, dtype_bits, keepalive) =
+        cuda_preprocess::prepare_resized_bgr_cuda(
+            bin.as_slice(),
+            scaled_width,
+            scaled_height,
+            canvas_width,
+            canvas_height,
+            pad_x,
+            pad_y,
+            pad_value,
+            half,
+        )
+        .map_err(|e| rustler::Error::Term(Box::new(e)))?;
 
-    Ok((ptr, shape, device_ordinal, ResourceArc::new(keepalive)))
+    Ok((
+        ptr,
+        shape,
+        device_ordinal,
+        dtype_bits,
+        ResourceArc::new(keepalive),
+    ))
 }
 
 // Sigmoid over the full prototype array is real CPU work, not sub-ms.
@@ -173,6 +185,7 @@ pub fn create_mask<'a>(
     coefficients: Vec<f32>,
     prototypes_bin: rustler::Binary,
     proto_shape_term: Term<'a>, // Elixir tuple {batch, m, h, w} -> Vec<usize>
+    dtype_bits: usize,
     threshold: f32,
 ) -> Result<Term<'a>, rustler::Error> {
     model::create_mask(
@@ -180,6 +193,7 @@ pub fn create_mask<'a>(
         coefficients,
         prototypes_bin,
         proto_shape_term,
+        dtype_bits,
         threshold,
     )
 }

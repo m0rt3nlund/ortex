@@ -1,11 +1,10 @@
 defmodule Ortex.CudaTensor do
   @moduledoc """
   Wraps a raw CUDA device pointer produced directly by a native preprocessing
-  kernel (e.g. `Ortex.Image.prepare_resized_cuda/7`), for zero-copy handoff
-  straight into `Ortex.run/2` without ever going through Nx or Torchx.
+  kernel for zero-copy handoff straight into `Ortex.run/2` without ever going
+  through Nx or Torchx.
 
-  `keepalive` must be kept referenced by the caller for as long as `ptr` is
-  in use -- it's the ResourceArc holding the underlying GPU buffer alive.
+  `keepalive` must be kept referenced by the caller for as long as `ptr` is in use
   """
   defstruct [:ptr, :shape, :dtype_str, :dtype_bits, :device_index, :keepalive]
 
