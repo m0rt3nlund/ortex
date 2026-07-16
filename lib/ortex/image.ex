@@ -16,11 +16,7 @@ defmodule Ortex.Image do
     )
   end
 
-  @doc """
-  Like `prepare_resized/7`, but does the normalize/BGR->RGB/HWC->CHW/pad step on GPU via a custom CUDA kernel.
-  `canvas_width`/`canvas_height` need not be equal, letterbox canvas need not be square.
-  `half` selects f16 output instead of the default f32.
-  """
+  @doc "Like `prepare_resized/7`, but does normalize/BGR->RGB/HWC->CHW/pad on GPU via a custom CUDA kernel."
   def prepare_resized_cuda(
         image,
         scaled_width,

@@ -1,38 +1,6 @@
-//! Custom CUDA kernel for the "rest of fit_rust" preprocessing step: BGR->RGB
-//! swap, u8->f32/f16 normalize, HWC->CHW transpose, and letterbox padding,
-//! fused into one GPU kernel. Fed by the same CPU-side Evision resize the
-//! Torchx path already uses (resize itself stays on CPU deliberately -- see
-//! frame_scalers.ex -- since that avoids uploading the full camera frame).
-//!
-//! The kernel is compiled once via NVRTC and cached in a process-global
-//! OnceLock; CudaContext::new(0) retains the device's *primary* context
-//! (cuDevicePrimaryCtxRetain), the same context onnxruntime's CUDA EP and
-//! Torchx already use in this process -- not a separate/duplicate one.
-//!
-//! The output buffer is likewise a single, reused, process-lifetime
-//! allocation (behind a Mutex, resized only if the requested size changes)
-//! rather than a fresh `alloc_zeros` per frame. A fresh-per-frame buffer was
-//! the original design, wrapped in a Rustler ResourceArc for the BEAM to
-//! free once unreachable -- but BEAM GC runs on its own schedule, not
-//! deterministically, so unfreed GPU buffers could pile up between GC
-//! passes and produce exactly the kind of occasional, seemingly-random
-//! latency spike observed in practice (a GC pass finally freeing a batch of
-//! them, stalling whatever CUDA call happened to be in flight at that
-//! moment). Reusing one buffer removes that dependency entirely. Since f32
-//! and f16 output are mutually exclusive per call but both need to stay
-//! reusable across calls, each dtype gets its own persistent buffer slot
-//! rather than sharing one via an unsafe transmute.
-//!
-//! Safety note: reusing a single buffer per dtype (rather than a small pool)
-//! is only correct because the pipeline that calls this is currently
-//! strictly sequential -- frame N+1's preprocessing never starts until frame
-//! N's entire Inferencer.process/3 (preprocess -> Ortex.run -> postprocess)
-//! has returned, so by the time this function's Mutex is next locked, the
-//! previous frame's TensorRT read of this same buffer has already finished.
-//! If the pipeline is ever changed to overlap frames (e.g. splitting
-//! preprocess/infer into separate async GenStage stages), this needs to
-//! become an actual pool (2-3 buffers, round-robin/refcounted) instead --
-//! a single shared buffer would then be a genuine data race.
+//! Fused CUDA kernel for fit_rust: BGR->RGB, u8->f32/f16 normalize, HWC->CHW, letterbox pad.
+//! Kernel and output buffers (one per dtype) persist across calls to avoid per-frame BEAM GC latency spikes.
+//! Assumes a strictly sequential pipeline; would need a real buffer pool if frames ever overlap.
 
 use cudarc::driver::{
     CudaContext, CudaFunction, CudaSlice, CudaStream, DevicePtr, LaunchConfig, PushKernelArg,
@@ -41,11 +9,46 @@ use cudarc::nvrtc::compile_ptx;
 use half::f16;
 use std::sync::{Arc, Mutex, OnceLock};
 
-// `cuda_fp16.h` is one of the handful of standard CUDA headers NVRTC bundles
-// internally for JIT use (no toolkit include path needs to be configured),
-// specifically to support half-precision kernels like this one.
+// No cuda_fp16.h include path on this NVRTC setup, so f32->f16 is hand-rolled via bit-cast.
 const KERNEL_SRC: &str = r#"
-#include <cuda_fp16.h>
+__device__ unsigned short float_to_half_rn(float f) {
+    union { float f; unsigned int u; } bits;
+    bits.f = f;
+    unsigned int x = bits.u;
+    unsigned int sign = (x >> 16) & 0x8000u;
+    unsigned int mantissa = x & 0x7fffffu;
+    int exp = (int)((x >> 23) & 0xffu) - 127 + 15;
+
+    if (exp <= 0) {
+        // Zero, or too small to represent even as a subnormal half.
+        if (exp < -10) {
+            return (unsigned short)sign;
+        }
+        mantissa |= 0x800000u;
+        unsigned int shift = (unsigned int)(14 - exp);
+        unsigned int half_mantissa = mantissa >> shift;
+        unsigned int remainder = mantissa & ((1u << shift) - 1u);
+        unsigned int halfway = 1u << (shift - 1u);
+        if (remainder > halfway || (remainder == halfway && (half_mantissa & 1u))) {
+            half_mantissa += 1u;
+        }
+        return (unsigned short)(sign | half_mantissa);
+    } else if (exp >= 31) {
+        // Overflow to infinity, or already inf/NaN in the f32 input.
+        if (((x >> 23) & 0xffu) == 0xffu && mantissa != 0u) {
+            return (unsigned short)(sign | 0x7e00u);
+        }
+        return (unsigned short)(sign | 0x7c00u);
+    } else {
+        unsigned int half_mantissa = mantissa >> 13;
+        unsigned int remainder = mantissa & 0x1fffu;
+        unsigned short result = (unsigned short)(sign | ((unsigned int)exp << 10) | half_mantissa);
+        if (remainder > 0x1000u || (remainder == 0x1000u && (half_mantissa & 1u))) {
+            result += 1;
+        }
+        return result;
+    }
+}
 
 extern "C" __global__ void bgr_to_padded_rgb_chw_f32(
     const unsigned char* src,
@@ -87,7 +90,7 @@ extern "C" __global__ void bgr_to_padded_rgb_chw_f32(
 
 extern "C" __global__ void bgr_to_padded_rgb_chw_f16(
     const unsigned char* src,
-    __half* dst,
+    unsigned short* dst,
     int scaled_width,
     int scaled_height,
     int canvas_width,
@@ -113,11 +116,11 @@ extern "C" __global__ void bgr_to_padded_rgb_chw_f16(
         unsigned char g = src[src_offset + 1];
         unsigned char r = src[src_offset + 2];
 
-        dst[0 * hw + idx] = __float2half_rn(((float)r) / 255.0f);
-        dst[1 * hw + idx] = __float2half_rn(((float)g) / 255.0f);
-        dst[2 * hw + idx] = __float2half_rn(((float)b) / 255.0f);
+        dst[0 * hw + idx] = float_to_half_rn(((float)r) / 255.0f);
+        dst[1 * hw + idx] = float_to_half_rn(((float)g) / 255.0f);
+        dst[2 * hw + idx] = float_to_half_rn(((float)b) / 255.0f);
     } else {
-        __half pad = __float2half_rn(pad_value_norm);
+        unsigned short pad = float_to_half_rn(pad_value_norm);
         dst[0 * hw + idx] = pad;
         dst[1 * hw + idx] = pad;
         dst[2 * hw + idx] = pad;
@@ -284,8 +287,7 @@ fn launch_f16(
     Ok(raw_ptr as u64)
 }
 
-/// Returns (raw_device_ptr, shape [1,3,canvas_height,canvas_width],
-/// device_ordinal, dtype_bits (32 or 16), keepalive).
+/// Returns (raw_device_ptr, shape, device_ordinal, dtype_bits, keepalive).
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_resized_bgr_cuda(
     bgr_u8: &[u8],
@@ -309,7 +311,7 @@ pub fn prepare_resized_bgr_cuda(
         ));
     }
 
-    // Not wrapped in a keepalive resource 
+    // Rust-scoped, not GC-tracked -- only the output buffers need reuse.
     let src_dev = state
         .stream
         .clone_htod(bgr_u8)
