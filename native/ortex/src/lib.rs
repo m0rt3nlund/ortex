@@ -142,10 +142,7 @@ pub fn prepare_resized_image<'a>(
 }
 
 ///  normalize/transpose/pad on GPU via a custom CUDA kernel
-// Kernel launch + stream.synchronize() is compute/sync-bound, not I/O-bound --
-// DirtyCpu is the correct pool (was DirtyIo, which it shares with ex_pylon's
-// blocking camera grab NIF).
-#[rustler::nif(schedule = "DirtyCpu")]
+#[rustler::nif(schedule = "DirtyIo")]
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_resized_image_cuda(
     bin: Binary,
