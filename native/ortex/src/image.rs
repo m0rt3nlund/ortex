@@ -44,6 +44,127 @@ pub fn prepare_image<'a>(
     }
 }
 
+pub fn prepare_resized_image<'a>(
+    env: Env<'a>,
+    bin: Binary,
+    scaled_width: u32,
+    scaled_height: u32,
+    canvas_size: u32,
+    pad_x: u32,
+    pad_y: u32,
+    pad_value: u8,
+) -> NifResult<Term<'a>> {
+    let input_vec: Vec<u8> = bin.as_slice().to_vec();
+
+    match normalize_bgr_to_padded_chw(
+        input_vec,
+        scaled_width,
+        scaled_height,
+        canvas_size,
+        pad_x,
+        pad_y,
+        pad_value,
+    ) {
+        Ok(f32_bytes) => {
+            let mut owned = match OwnedBinary::new(f32_bytes.len()) {
+                Some(o) => o,
+                None => return Err(Error::BadArg.into()),
+            };
+            owned.as_mut_slice().copy_from_slice(&f32_bytes);
+            let output_bin = Binary::from_owned(owned, env);
+            Ok((atoms::ok(), output_bin).encode(env))
+        }
+        Err(e) => {
+            let mut owned = match OwnedBinary::new(e.len()) {
+                Some(o) => o,
+                None => return Err(Error::BadArg.into()),
+            };
+            owned.as_mut_slice().copy_from_slice(e.as_bytes());
+            let err_bin = Binary::from_owned(owned, env);
+            Ok((atoms::error(), err_bin).encode(env))
+        }
+    }
+}
+
+fn normalize_bgr_to_padded_chw(
+    input: Vec<u8>,
+    scaled_width: u32,
+    scaled_height: u32,
+    canvas_size: u32,
+    pad_x: u32,
+    pad_y: u32,
+    pad_value: u8,
+) -> Result<Vec<u8>, &'static str> {
+    let (w, h) = (scaled_width as usize, scaled_height as usize);
+    let canvas = canvas_size as usize;
+
+    if input.len() < w * h * 3 {
+        return Err("Input buffer smaller than scaled_width * scaled_height * 3");
+    }
+
+    let hw = canvas * canvas;
+    let total_bytes = 4 * 3 * hw; // f32 bytes, batch=1, CHW
+    let pad_norm = (pad_value as f32) / 255.0;
+    let mut tensor: Vec<u8> = vec![0u8; total_bytes];
+
+    // Fill with the (normalized) pad value first -- cheaper than branching
+    // per-pixel inside the hot loop 
+    {
+        let pad_bytes = pad_norm.to_ne_bytes();
+        for chunk in tensor.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&pad_bytes);
+        }
+    }
+
+    let row_stride = w * 3;
+    let norm_scale = f32x16::splat(1.0 / 255.0);
+
+    // SIMD CHW build: 3 passes (R, G, B) -- reads BGR input, writes RGB
+    // planes, at the (pad_x, pad_y) offset within the padded canvas.
+    for bgr_ch in 0..3 {
+        let rgb_idx = 2 - bgr_ch;
+        for y in 0..h {
+            let row_offset = y * row_stride;
+            let canvas_row_base = bgr_ch * hw + (pad_y as usize + y) * canvas + pad_x as usize;
+            let mut x = 0;
+            while x + 16 <= w {
+                let mut u8_arr = [0u8; 16];
+                for i in 0..16 {
+                    let pixel_offset = row_offset + (x + i) * 3 + rgb_idx;
+                    u8_arr[i] = input[pixel_offset];
+                }
+                let u8_vals = u8x16::new(u8_arr);
+                let f32_arr: [f32; 16] = u8_vals.as_array().map(|u| u as f32);
+                let norm_vec = f32x16::new(f32_arr) * norm_scale;
+
+                let tensor_offset = (canvas_row_base + x) * 4usize;
+                unsafe {
+                    let tensor_ptr = tensor.as_mut_ptr().add(tensor_offset).cast::<f32>();
+                    let norm_arr = norm_vec.as_array();
+                    for i in 0..16 {
+                        *tensor_ptr.add(i) = norm_arr[i];
+                    }
+                }
+
+                x += 16;
+            }
+
+            for tail in x..w {
+                let pixel_offset = row_offset + tail * 3 + rgb_idx;
+                let val_u8 = input[pixel_offset];
+                let norm_val = (val_u8 as f32) / 255.0;
+                let tensor_offset = (canvas_row_base + tail) * 4usize;
+                unsafe {
+                    let f32_ptr = tensor.as_mut_ptr().add(tensor_offset).cast::<f32>();
+                    *f32_ptr = norm_val;
+                }
+            }
+        }
+    }
+
+    Ok(tensor)
+}
+
 fn custom_letterbox_resize(
     original: &DynamicImage,
     target_w: u32,
@@ -126,18 +247,7 @@ fn resize_and_normalize_to_tensor(
             .map_err(|_| "Failed to load image")?
             .to_rgb8()
     } else {
-        // Raw BGR HWC u8 from Evision.Mat.to_binary()
-        let orig_raw = input.as_slice();
-        let mut rgb_raw = vec![0u8; input.len()];
-        for y in 0..height as usize {
-            for x in 0..width as usize {
-                let offset = (y * width as usize + x) * 3;
-                rgb_raw[offset] = orig_raw[offset + 2]; // R = BGR[2]
-                rgb_raw[offset + 1] = orig_raw[offset + 1]; // G = BGR[1]
-                rgb_raw[offset + 2] = orig_raw[offset]; // B = BGR[0]
-            }
-        }
-        ImageBuffer::from_raw(width, height, rgb_raw).ok_or("Invalid raw dimensions")?
+        ImageBuffer::from_raw(width, height, input).ok_or("Invalid raw dimensions")?
     };
     //println!("Load time: {:?}", start_load.elapsed());
 

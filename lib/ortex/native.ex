@@ -6,7 +6,6 @@ defmodule Ortex.Native do
   # We have to compile the crate before `use Rustler` compiles the crate since
   # cargo downloads the onnxruntime shared libraries and they are not available
   # to load or copy into Elixir's during the on_load or Elixir compile steps.
-  # In the future, this may be configurable in Rustler.
   if Version.compare(@rustler_version, "0.30.0") in [:gt, :eq] do
     Rustler.Compiler.compile_crate(:ortex, Application.compile_env(:ortex, __MODULE__, []),
       otp_app: :ortex,
@@ -30,6 +29,7 @@ defmodule Ortex.Native do
 
   def run(_model, _inputs), do: :erlang.nif_error(:nif_not_loaded)
   def run_binary(_model, _inputs), do: :erlang.nif_error(:nif_not_loaded)
+  def run_cuda(_model, _inputs), do: :erlang.nif_error(:nif_not_loaded)
   def from_binary(_bin, _shape, _type), do: :erlang.nif_error(:nif_not_loaded)
   def to_binary(_reference, _bits, _limit), do: :erlang.nif_error(:nif_not_loaded)
   def show_session(_model), do: :erlang.nif_error(:nif_not_loaded)
@@ -41,6 +41,30 @@ defmodule Ortex.Native do
 
   def concatenate(_tensors_refs, _type, _axis), do: :erlang.nif_error(:nif_not_loaded)
 
-  def create_mask(_coefficients, _prototypes_bin, _proto_shape_term, _threshold), do: :erlang.nif_error(:nif_not_loaded)
+  def create_mask(_coefficients, _prototypes_bin, _proto_shape_term, _dtype_bits, _threshold), do: :erlang.nif_error(:nif_not_loaded)
   def prepare_image(_binary, _width, _height, _size), do: :erlang.nif_error(:nif_not_loaded)
+
+  def prepare_resized_image(
+        _binary,
+        _scaled_width,
+        _scaled_height,
+        _canvas_size,
+        _pad_x,
+        _pad_y,
+        _pad_value
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
+
+  def prepare_resized_image_cuda(
+        _binary,
+        _scaled_width,
+        _scaled_height,
+        _canvas_width,
+        _canvas_height,
+        _pad_x,
+        _pad_y,
+        _pad_value,
+        _half
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
 end

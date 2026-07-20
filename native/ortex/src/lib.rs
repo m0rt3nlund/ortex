@@ -5,13 +5,18 @@
 //! directly.
 
 mod constants;
+mod cuda_preprocess;
 mod image;
 mod model;
 mod tensor;
 mod utils;
 
+use cuda_preprocess::CudaPreprocessedImage;
 use model::OrtexModel;
+use rustler::Resource;
 use tensor::OrtexTensor;
+
+impl Resource for CudaPreprocessedImage {}
 
 use rustler::types::Binary;
 use rustler::ResourceArc;
@@ -56,6 +61,14 @@ fn run_binary<'a>(
 ) -> NifResult<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>> {
     let _ = env;
     model::run_binary(model, &inputs).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn run_cuda(
+    model: ResourceArc<model::OrtexModel>,
+    inputs: Vec<(u64, Vec<i64>, String, usize, i32)>,
+) -> NifResult<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>> {
+    model::run_cuda(model, &inputs).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -103,7 +116,7 @@ pub fn reshape<'a>(
     Ok(ResourceArc::new(tensor.reshape(shape)?))
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 pub fn prepare_image<'a>(
     env: Env<'a>,
     bin: Binary,
@@ -114,12 +127,65 @@ pub fn prepare_image<'a>(
     image::prepare_image(env, bin, width, height, size)
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
+pub fn prepare_resized_image<'a>(
+    env: Env<'a>,
+    bin: Binary,
+    scaled_width: u32,
+    scaled_height: u32,
+    canvas_size: u32,
+    pad_x: u32,
+    pad_y: u32,
+    pad_value: u8,
+) -> NifResult<Term<'a>> {
+    image::prepare_resized_image(env, bin, scaled_width, scaled_height, canvas_size, pad_x, pad_y, pad_value)
+}
+
+///  normalize/transpose/pad on GPU via a custom CUDA kernel
+#[rustler::nif(schedule = "DirtyIo")]
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_resized_image_cuda(
+    bin: Binary,
+    scaled_width: i32,
+    scaled_height: i32,
+    canvas_width: i32,
+    canvas_height: i32,
+    pad_x: i32,
+    pad_y: i32,
+    pad_value: u8,
+    half: bool,
+) -> NifResult<(u64, Vec<i64>, i32, usize, ResourceArc<CudaPreprocessedImage>)> {
+    let (ptr, shape, device_ordinal, dtype_bits, keepalive) =
+        cuda_preprocess::prepare_resized_bgr_cuda(
+            bin.as_slice(),
+            scaled_width,
+            scaled_height,
+            canvas_width,
+            canvas_height,
+            pad_x,
+            pad_y,
+            pad_value,
+            half,
+        )
+        .map_err(|e| rustler::Error::Term(Box::new(e)))?;
+
+    Ok((
+        ptr,
+        shape,
+        device_ordinal,
+        dtype_bits,
+        ResourceArc::new(keepalive),
+    ))
+}
+
+// Sigmoid over the full prototype array is real CPU work, not sub-ms.
+#[rustler::nif(schedule = "DirtyCpu")]
 pub fn create_mask<'a>(
     env: Env<'a>,
     coefficients: Vec<f32>,
     prototypes_bin: rustler::Binary,
     proto_shape_term: Term<'a>, // Elixir tuple {batch, m, h, w} -> Vec<usize>
+    dtype_bits: usize,
     threshold: f32,
 ) -> Result<Term<'a>, rustler::Error> {
     model::create_mask(
@@ -127,6 +193,7 @@ pub fn create_mask<'a>(
         coefficients,
         prototypes_bin,
         proto_shape_term,
+        dtype_bits,
         threshold,
     )
 }
@@ -145,7 +212,9 @@ pub fn concatenate<'a>(
 
 pub fn on_load(env: Env) -> bool {
     tracing_subscriber::fmt::init();
-    env.register::<OrtexModel>().is_ok() && env.register::<OrtexTensor>().is_ok()
+    env.register::<OrtexModel>().is_ok()
+        && env.register::<OrtexTensor>().is_ok()
+        && env.register::<CudaPreprocessedImage>().is_ok()
 }
 
 rustler::init!(
