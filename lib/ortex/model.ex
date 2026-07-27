@@ -85,6 +85,7 @@ defmodule Ortex.Model do
 
     raw_output =
       if Enum.all?(tensor_list, &cuda_backed?/1) do
+        IO.inspect("cuda_zero_copy", label: "ORTEX PATH")
         {cuda_inputs, keepalives} = tensor_list |> Enum.map(&cuda_input/1) |> Enum.unzip()
 
         result = Ortex.Native.run_cuda(model, cuda_inputs)
@@ -92,6 +93,7 @@ defmodule Ortex.Model do
         _ = keepalives
         result
       else
+        IO.inspect(Enum.map(tensor_list, & &1.data.__struct__), label: "ORTEX PATH cpu_binary_fallback backends")
         inputs =
           Enum.map(tensor_list, fn %Nx.Tensor{shape: shape, type: {type_atom, bits}} = tensor ->
             {Nx.to_binary(tensor), Tuple.to_list(shape), Atom.to_string(type_atom), bits}
