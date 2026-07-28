@@ -62,8 +62,6 @@ defmodule Ortex.Model do
   # A pre-built raw CUDA pointer
   @doc false
   def run(%Ortex.Model{reference: model}, %Ortex.CudaTensor{} = cuda_tensor) do
-    IO.inspect("cuda_tensor_prebuilt_ptr", label: "ORTEX PATH")
-
     result =
       Ortex.Native.run_cuda(model, [
         {cuda_tensor.ptr, cuda_tensor.shape, cuda_tensor.dtype_str, cuda_tensor.dtype_bits,
@@ -78,7 +76,6 @@ defmodule Ortex.Model do
 
   @doc false
   def run(%Ortex.Model{} = model, tensor) when not is_tuple(tensor) do
-    IO.inspect(tensor.__struct__, label: "ORTEX PATH single tensor wrapped, struct")
     run(model, {tensor})
   end
 
@@ -88,7 +85,6 @@ defmodule Ortex.Model do
 
     raw_output =
       if Enum.all?(tensor_list, &cuda_backed?/1) do
-        IO.inspect("cuda_zero_copy", label: "ORTEX PATH")
         {cuda_inputs, keepalives} = tensor_list |> Enum.map(&cuda_input/1) |> Enum.unzip()
 
         result = Ortex.Native.run_cuda(model, cuda_inputs)
@@ -96,7 +92,6 @@ defmodule Ortex.Model do
         _ = keepalives
         result
       else
-        IO.inspect(Enum.map(tensor_list, & &1.data.__struct__), label: "ORTEX PATH cpu_binary_fallback backends")
         inputs =
           Enum.map(tensor_list, fn %Nx.Tensor{shape: shape, type: {type_atom, bits}} = tensor ->
             {Nx.to_binary(tensor), Tuple.to_list(shape), Atom.to_string(type_atom), bits}
