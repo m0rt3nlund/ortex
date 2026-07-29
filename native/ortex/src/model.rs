@@ -28,6 +28,7 @@ use rustler::ResourceArc;
 use rustler::Term;
 use std::error::Error as StdError;
 use std::sync::mpsc::{channel, Sender};
+use std::sync::Mutex;
 use std::thread;
 
 type Job = Box<dyn FnOnce(&mut Session) + Send>;
@@ -36,7 +37,7 @@ type Job = Box<dyn FnOnce(&mut Session) + Send>;
 /// itself, and everything that touches it (including creation), runs on one dedicated OS
 /// thread so onnxruntime/CUDA never observes calls from more than one thread.
 pub struct OrtexModel {
-    tx: Option<Sender<Job>>,
+    tx: Mutex<Option<Sender<Job>>>,
     handle: Option<thread::JoinHandle<()>>,
 }
 impl Resource for OrtexModel {}
@@ -49,6 +50,8 @@ impl OrtexModel {
     {
         let (rtx, rrx) = channel();
         self.tx
+            .lock()
+            .unwrap()
             .as_ref()
             .unwrap()
             .send(Box::new(move |session| {
@@ -61,7 +64,7 @@ impl OrtexModel {
 
 impl Drop for OrtexModel {
     fn drop(&mut self) {
-        self.tx.take();
+        self.tx.lock().unwrap().take();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -97,7 +100,7 @@ pub fn init(
     match irx.recv().unwrap() {
         Some(e) => Err(e),
         None => Ok(OrtexModel {
-            tx: Some(tx),
+            tx: Mutex::new(Some(tx)),
             handle: Some(handle),
         }),
     }
