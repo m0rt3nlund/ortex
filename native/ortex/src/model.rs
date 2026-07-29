@@ -36,7 +36,8 @@ type Job = Box<dyn FnOnce(&mut Session) + Send>;
 /// itself, and everything that touches it (including creation), runs on one dedicated OS
 /// thread so onnxruntime/CUDA never observes calls from more than one thread.
 pub struct OrtexModel {
-    tx: Sender<Job>,
+    tx: Option<Sender<Job>>,
+    handle: Option<thread::JoinHandle<()>>,
 }
 impl Resource for OrtexModel {}
 
@@ -48,11 +49,22 @@ impl OrtexModel {
     {
         let (rtx, rrx) = channel();
         self.tx
+            .as_ref()
+            .unwrap()
             .send(Box::new(move |session| {
                 let _ = rtx.send(f(session));
             }))
             .unwrap();
         rrx.recv().unwrap()
+    }
+}
+
+impl Drop for OrtexModel {
+    fn drop(&mut self) {
+        self.tx.take();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -65,7 +77,7 @@ pub fn init(
     let (tx, rx) = channel::<Job>();
     let (itx, irx) = channel();
 
-    thread::spawn(move || {
+    let handle = thread::spawn(move || {
         let built = Session::builder()
             .and_then(|b| b.with_optimization_level(map_opt_level(opt)))
             .and_then(|b| b.with_execution_providers(eps))
@@ -84,7 +96,10 @@ pub fn init(
 
     match irx.recv().unwrap() {
         Some(e) => Err(e),
-        None => Ok(OrtexModel { tx }),
+        None => Ok(OrtexModel {
+            tx: Some(tx),
+            handle: Some(handle),
+        }),
     }
 }
 
