@@ -7,7 +7,40 @@ use cudarc::driver::{
 };
 use cudarc::nvrtc::compile_ptx;
 use half::f16;
+use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
+
+type CudaJob = Box<dyn FnOnce() + Send>;
+
+fn worker() -> &'static Mutex<Sender<CudaJob>> {
+    static TX: OnceLock<Mutex<Sender<CudaJob>>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = channel::<CudaJob>();
+        thread::spawn(move || {
+            for job in rx {
+                job();
+            }
+        });
+        Mutex::new(tx)
+    })
+}
+
+fn with_worker<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let (rtx, rrx) = channel();
+    worker()
+        .lock()
+        .unwrap()
+        .send(Box::new(move || {
+            let _ = rtx.send(f());
+        }))
+        .unwrap();
+    rrx.recv().unwrap()
+}
 
 // No cuda_fp16.h include path on this NVRTC setup, so f32->f16 is hand-rolled via bit-cast.
 const KERNEL_SRC: &str = r#"
@@ -300,64 +333,68 @@ pub fn prepare_resized_bgr_cuda(
     pad_value: u8,
     half: bool,
 ) -> Result<(u64, Vec<i64>, i32, usize, CudaPreprocessedImage), String> {
-    let state = kernel_state()?;
+    let bgr_u8 = bgr_u8.to_vec();
 
-    let expected_len = (scaled_width * scaled_height * 3) as usize;
-    if bgr_u8.len() < expected_len {
-        return Err(format!(
-            "input buffer too small: got {}, need {}",
-            bgr_u8.len(),
-            expected_len
-        ));
-    }
+    with_worker(move || {
+        let state = kernel_state()?;
 
-    // Rust-scoped, not GC-tracked -- only the output buffers need reuse.
-    let src_dev = state
-        .stream
-        .clone_htod(bgr_u8)
-        .map_err(|e| format!("clone_htod failed: {e:?}"))?;
+        let expected_len = (scaled_width * scaled_height * 3) as usize;
+        if bgr_u8.len() < expected_len {
+            return Err(format!(
+                "input buffer too small: got {}, need {}",
+                bgr_u8.len(),
+                expected_len
+            ));
+        }
 
-    let out_len = (3 * canvas_width * canvas_height) as usize;
-    let pad_value_norm = (pad_value as f32) / 255.0f32;
+        // Rust-scoped, not GC-tracked -- only the output buffers need reuse.
+        let src_dev = state
+            .stream
+            .clone_htod(&bgr_u8)
+            .map_err(|e| format!("clone_htod failed: {e:?}"))?;
 
-    let (raw_ptr, dtype_bits) = if half {
-        let ptr = launch_f16(
-            state,
-            &src_dev,
-            out_len,
-            scaled_width,
-            scaled_height,
-            canvas_width,
-            canvas_height,
-            pad_x,
-            pad_y,
-            pad_value_norm,
-        )?;
-        (ptr, 16usize)
-    } else {
-        let ptr = launch_f32(
-            state,
-            &src_dev,
-            out_len,
-            scaled_width,
-            scaled_height,
-            canvas_width,
-            canvas_height,
-            pad_x,
-            pad_y,
-            pad_value_norm,
-        )?;
-        (ptr, 32usize)
-    };
+        let out_len = (3 * canvas_width * canvas_height) as usize;
+        let pad_value_norm = (pad_value as f32) / 255.0f32;
 
-    // NCHW: (batch, channel, height, width)
-    let shape = vec![1i64, 3, canvas_height as i64, canvas_width as i64];
+        let (raw_ptr, dtype_bits) = if half {
+            let ptr = launch_f16(
+                state,
+                &src_dev,
+                out_len,
+                scaled_width,
+                scaled_height,
+                canvas_width,
+                canvas_height,
+                pad_x,
+                pad_y,
+                pad_value_norm,
+            )?;
+            (ptr, 16usize)
+        } else {
+            let ptr = launch_f32(
+                state,
+                &src_dev,
+                out_len,
+                scaled_width,
+                scaled_height,
+                canvas_width,
+                canvas_height,
+                pad_x,
+                pad_y,
+                pad_value_norm,
+            )?;
+            (ptr, 32usize)
+        };
 
-    Ok((
-        raw_ptr,
-        shape,
-        state.ctx.ordinal() as i32,
-        dtype_bits,
-        CudaPreprocessedImage,
-    ))
+        // NCHW: (batch, channel, height, width)
+        let shape = vec![1i64, 3, canvas_height as i64, canvas_width as i64];
+
+        Ok((
+            raw_ptr,
+            shape,
+            state.ctx.ordinal() as i32,
+            dtype_bits,
+            CudaPreprocessedImage,
+        ))
+    })
 }

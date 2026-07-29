@@ -1,12 +1,6 @@
-//! Abstractions for creating an ONNX Runtime Session and Environment which can be safely
-//! passed to and from the BEAM.
-//!
-//! # Examples
-//!
-//! ```
-//! let model = init("./models/resnet50.onnx", vec![])?;
-//! let (inputs, outputs) = show(model)?;
-//! ```
+//! Abstractions for creating an ONNX Runtime Session and Environment
+//!  which can be safely passed to and from the BEAM.
+
 
 use crate::tensor::OrtexTensor;
 use crate::utils::{is_bool_input, map_opt_level};
@@ -33,9 +27,7 @@ use std::thread;
 
 type Job = Box<dyn FnOnce(&mut Session) + Send>;
 
-/// Holds the model state which include onnxruntime session and environment. The session
-/// itself, and everything that touches it (including creation), runs on one dedicated OS
-/// thread so onnxruntime/CUDA never observes calls from more than one thread.
+/// Holds the model state which include onnxruntime session and environment
 pub struct OrtexModel {
     tx: Mutex<Option<Sender<Job>>>,
     handle: Mutex<Option<thread::JoinHandle<()>>>,
