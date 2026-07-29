@@ -38,7 +38,7 @@ type Job = Box<dyn FnOnce(&mut Session) + Send>;
 /// thread so onnxruntime/CUDA never observes calls from more than one thread.
 pub struct OrtexModel {
     tx: Mutex<Option<Sender<Job>>>,
-    handle: Option<thread::JoinHandle<()>>,
+    handle: Mutex<Option<thread::JoinHandle<()>>>,
 }
 impl Resource for OrtexModel {}
 
@@ -65,7 +65,7 @@ impl OrtexModel {
 impl Drop for OrtexModel {
     fn drop(&mut self) {
         self.tx.lock().unwrap().take();
-        if let Some(handle) = self.handle.take() {
+        if let Some(handle) = self.handle.lock().unwrap().take() {
             let _ = handle.join();
         }
     }
@@ -101,7 +101,7 @@ pub fn init(
         Some(e) => Err(e),
         None => Ok(OrtexModel {
             tx: Mutex::new(Some(tx)),
-            handle: Some(handle),
+            handle: Mutex::new(Some(handle)),
         }),
     }
 }
