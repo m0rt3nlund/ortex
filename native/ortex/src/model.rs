@@ -21,54 +21,87 @@ use rustler::Resource;
 use rustler::ResourceArc;
 use rustler::Term;
 use std::error::Error as StdError;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 
-type Job = Box<dyn FnOnce(&mut Session) + Send>;
+type Job = Box<dyn FnOnce(&mut Option<Session>) + Send>;
 
-/// Holds the model state which include onnxruntime session and environment
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn worker() -> &'static Mutex<Sender<Job>> {
+    static TX: OnceLock<Mutex<Sender<Job>>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = channel::<Job>();
+        thread::spawn(move || {
+            let mut current: Option<Session> = None;
+            for job in rx {
+                job(&mut current);
+            }
+        });
+        Mutex::new(tx)
+    })
+}
+
+fn with_worker<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Option<Session>) -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let (rtx, rrx) = channel();
+    worker()
+        .lock()
+        .unwrap()
+        .send(Box::new(move |current| {
+            let _ = rtx.send(f(current));
+        }))
+        .unwrap();
+    rrx.recv().unwrap()
+}
+
+
 pub struct OrtexModel {
-    tx: Mutex<Option<Sender<Job>>>,
-    handle: Mutex<Option<thread::JoinHandle<()>>>,
+    generation: u64,
 }
 impl Resource for OrtexModel {}
 
 impl OrtexModel {
-    fn with_session<F, R>(&self, f: F) -> R
+    fn with_session<F, R>(&self, f: F) -> Result<R, Box<dyn StdError + Send + Sync>>
     where
-        F: FnOnce(&mut Session) -> R + Send + 'static,
+        F: FnOnce(&mut Session) -> Result<R, Box<dyn StdError + Send + Sync>> + Send + 'static,
         R: Send + 'static,
     {
-        let (rtx, rrx) = channel();
-        self.tx
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .send(Box::new(move |session| {
-                let _ = rtx.send(f(session));
-            }))
-            .unwrap();
-        rrx.recv().unwrap()
+        let generation = self.generation;
+        with_worker(move |current| {
+            if GENERATION.load(Ordering::SeqCst) != generation {
+                return Err("model has been unloaded or replaced".into());
+            }
+            match current {
+                Some(session) => f(session),
+                None => Err("model has been unloaded or replaced".into()),
+            }
+        })
     }
 
-    fn shutdown(&self) {
-        self.tx.lock().unwrap().take();
-        if let Some(handle) = self.handle.lock().unwrap().take() {
-            let _ = handle.join();
-        }
+    fn release(&self) {
+        let generation = self.generation;
+        with_worker(move |current| {
+            if GENERATION.load(Ordering::SeqCst) == generation {
+                *current = None;
+            }
+        });
     }
 }
 
 impl Drop for OrtexModel {
     fn drop(&mut self) {
-        self.shutdown();
+        self.release();
     }
 }
 
 pub fn unload(model: ResourceArc<OrtexModel>) {
-    model.shutdown();
+    model.release();
 }
 
 /// The execution providers are Atoms from Erlang/Elixir.
@@ -77,41 +110,42 @@ pub fn init(
     eps: Vec<ExecutionProviderDispatch>,
     opt: i32,
 ) -> Result<OrtexModel, Error> {
-    let (tx, rx) = channel::<Job>();
-    let (itx, irx) = channel();
+    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
 
-    let handle = thread::spawn(move || {
+    let error = with_worker(move |current| {
         let built = Session::builder()
             .and_then(|b| b.with_optimization_level(map_opt_level(opt)))
             .and_then(|b| b.with_execution_providers(eps))
             .and_then(|b| b.commit_from_file(model_path));
 
         match built {
-            Ok(mut session) => {
-                itx.send(None).unwrap();
-                for job in rx {
-                    job(&mut session);
-                }
+            Ok(session) => {
+                *current = Some(session);
+                GENERATION.store(generation, Ordering::SeqCst);
+                None
             }
-            Err(e) => itx.send(Some(e)).unwrap(),
+            Err(e) => {
+                *current = None;
+                Some(e)
+            }
         }
     });
 
-    match irx.recv().unwrap() {
+    match error {
         Some(e) => Err(e),
-        None => Ok(OrtexModel {
-            tx: Mutex::new(Some(tx)),
-            handle: Mutex::new(Some(handle)),
-        }),
+        None => Ok(OrtexModel { generation }),
     }
 }
 
 pub fn show(
     model: ResourceArc<OrtexModel>,
-) -> (
-    Vec<(String, String, Option<Vec<i64>>)>,
-    Vec<(String, String, Option<Vec<i64>>)>,
-) {
+) -> Result<
+    (
+        Vec<(String, String, Option<Vec<i64>>)>,
+        Vec<(String, String, Option<Vec<i64>>)>,
+    ),
+    Box<dyn StdError + Send + Sync>,
+> {
     model.with_session(|session| {
         let mut inputs = Vec::new();
         for input in session.inputs.iter() {
@@ -129,7 +163,7 @@ pub fn show(
             outputs.push((name, repr, dims));
         }
 
-        (inputs, outputs)
+        Ok((inputs, outputs))
     })
 }
 

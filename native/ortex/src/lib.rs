@@ -47,7 +47,7 @@ fn show_session(
     Vec<(String, String, Option<Vec<i64>>)>,
     Vec<(String, String, Option<Vec<i64>>)>,
 )> {
-    Ok(model::show(model))
+    model::show(model).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
