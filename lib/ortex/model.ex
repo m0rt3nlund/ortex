@@ -59,6 +59,9 @@ defmodule Ortex.Model do
     end
   end
 
+  @doc false
+  def unload(%Ortex.Model{reference: model}), do: Ortex.Native.unload(model)
+
   # A pre-built raw CUDA pointer
   @doc false
   def run(%Ortex.Model{reference: model}, %Ortex.CudaTensor{} = cuda_tensor) do

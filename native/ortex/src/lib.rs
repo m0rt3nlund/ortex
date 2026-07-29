@@ -35,6 +35,11 @@ fn init(
     Ok(ResourceArc::new(model))
 }
 
+#[rustler::nif(schedule = "DirtyIo")]
+fn unload(model: ResourceArc<model::OrtexModel>) {
+    model::unload(model);
+}
+
 #[rustler::nif]
 fn show_session(
     model: ResourceArc<model::OrtexModel>,

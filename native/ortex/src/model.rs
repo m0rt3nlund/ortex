@@ -52,15 +52,23 @@ impl OrtexModel {
             .unwrap();
         rrx.recv().unwrap()
     }
-}
 
-impl Drop for OrtexModel {
-    fn drop(&mut self) {
+    fn shutdown(&self) {
         self.tx.lock().unwrap().take();
         if let Some(handle) = self.handle.lock().unwrap().take() {
             let _ = handle.join();
         }
     }
+}
+
+impl Drop for OrtexModel {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+pub fn unload(model: ResourceArc<OrtexModel>) {
+    model.shutdown();
 }
 
 /// The execution providers are Atoms from Erlang/Elixir.
