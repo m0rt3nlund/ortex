@@ -13,9 +13,7 @@ path = "src/lib.rs"
 resolver = "2"
 
 [dependencies]
-cudarc = {version = "0.19", default-features = false, features = ["cuda-12060", "driver", "nvrtc", "dynamic-loading", "f16"]}
 half = "2.7.1"
-image = "0.25"
 ndarray = "0.16.1"
 num-traits = "0.2.19"
 ort = {version = "2.0.0-rc.10", features = [
@@ -29,7 +27,6 @@ ort-sys = {version = "=2.0.0-rc.10", default-features = false}
 rustler = "0.37"
 rustls = "0.23.34"
 tracing-subscriber = {version = "0.3", features = ["env-filter", "fmt"]}
-wide = "0.8.1"
 
 # [profile.dev]
 # debug = true # Enables full DWARF/PDB symbols (default on most platforms)

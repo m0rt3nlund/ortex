@@ -1,10 +1,9 @@
 //! Abstractions for creating an ONNX Runtime Session and Environment
 //!  which can be safely passed to and from the BEAM.
 
-
 use crate::tensor::OrtexTensor;
 use crate::utils::{cuda_init_lock, is_bool_input, map_opt_level};
-use ndarray::{s, Array, Array2, ArrayView, ArrayView3, IxDyn};
+use ndarray::{Array, ArrayView, IxDyn};
 use std::convert::TryInto;
 
 use ort::execution_providers::ExecutionProviderDispatch;
@@ -15,48 +14,31 @@ use ort::value::{TensorRef, TensorRefMut};
 use ort::Error;
 use rustler::types::Binary;
 use rustler::Atom;
-use rustler::Env;
-use rustler::NewBinary;
 use rustler::Resource;
 use rustler::ResourceArc;
-use rustler::Term;
 use std::error::Error as StdError;
-use std::sync::mpsc::{channel, Sender};
 use std::sync::Mutex;
-use std::thread;
-
-type Job = Box<dyn FnOnce(&mut Session) + Send>;
 
 pub struct OrtexModel {
-    tx: Mutex<Option<Sender<Job>>>,
-    handle: Mutex<Option<thread::JoinHandle<()>>>,
+    session: Mutex<Option<Session>>,
 }
 impl Resource for OrtexModel {}
 
 impl OrtexModel {
     fn with_session<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&mut Session) -> R + Send + 'static,
-        R: Send + 'static,
+        F: FnOnce(&mut Session) -> R,
     {
-        let (rtx, rrx) = channel();
-        self.tx
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .send(Box::new(move |session| {
-                let _ = rtx.send(f(session));
-            }))
-            .unwrap();
-        rrx.recv().unwrap()
+        let mut guard = self.session.lock().unwrap();
+        let session = guard.as_mut().expect("model has been unloaded");
+        f(session)
     }
 
     fn shutdown(&self) {
-        self.tx.lock().unwrap().take();
-        if let Some(handle) = self.handle.lock().unwrap().take() {
-            let _ = handle.join();
-        }
+        // Session creation/teardown must be serialized across models: onnxruntime's
+        // CUDA/TensorRT EP setup isn't safe to race against another model's init/drop.
+        let _guard = cuda_init_lock().lock().unwrap();
+        self.session.lock().unwrap().take();
     }
 }
 
@@ -76,38 +58,17 @@ pub fn init(
     eps: Vec<ExecutionProviderDispatch>,
     opt: i32,
 ) -> Result<OrtexModel, Error> {
-    let (tx, rx) = channel::<Job>();
-    let (itx, irx) = channel();
+    let session = {
+        let _guard = cuda_init_lock().lock().unwrap();
+        Session::builder()?
+            .with_optimization_level(map_opt_level(opt))?
+            .with_execution_providers(eps)?
+            .commit_from_file(model_path)?
+    };
 
-    let handle = thread::spawn(move || {
-        let built = {
-            let _guard = cuda_init_lock().lock().unwrap();
-            Session::builder()
-                .and_then(|b| b.with_optimization_level(map_opt_level(opt)))
-                .and_then(|b| b.with_execution_providers(eps))
-                .and_then(|b| b.commit_from_file(model_path))
-        };
-
-        match built {
-            Ok(mut session) => {
-                itx.send(None).unwrap();
-                for job in rx {
-                    job(&mut session);
-                }
-                let _guard = cuda_init_lock().lock().unwrap();
-                drop(session);
-            }
-            Err(e) => itx.send(Some(e)).unwrap(),
-        }
-    });
-
-    match irx.recv().unwrap() {
-        Some(e) => Err(e),
-        None => Ok(OrtexModel {
-            tx: Mutex::new(Some(tx)),
-            handle: Mutex::new(Some(handle)),
-        }),
-    }
+    Ok(OrtexModel {
+        session: Mutex::new(Some(session)),
+    })
 }
 
 pub fn show(
@@ -303,142 +264,4 @@ pub fn run_cuda(
 
         Ok(collected_outputs)
     })
-}
-
-fn bytes_to_f32_vec(bytes: &[u8], dtype_bits: usize, count: usize) -> Result<Vec<f32>, String> {
-    match dtype_bits {
-        32 => Ok(
-            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, count) }.to_vec(),
-        ),
-        16 => Ok(
-            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const half::f16, count) }
-                .iter()
-                .map(|x| x.to_f32())
-                .collect(),
-        ),
-        other => Err(format!("unsupported dtype_bits: {other}")),
-    }
-}
-
-pub fn create_mask<'a>(
-    env: Env<'a>,
-    // Decoded from Erlang terms (not reinterpreted raw bytes)
-    coefficients: Vec<f32>,
-    prototypes_bin: rustler::Binary,
-    proto_shape_term: Term<'a>, // Elixir tuple {batch, m, h, w} -> Vec<usize>
-    dtype_bits: usize,
-    threshold: f32,
-) -> Result<Term<'a>, rustler::Error> {
-    // Decode as 4-element tuple directly
-    let (batch_size, m, height, width): (usize, usize, usize, usize) =
-        proto_shape_term.decode().map_err(|e| {
-            println!("Failed to decode tuple: {:?}", e);
-            rustler::Error::BadArg
-        })?;
-
-    // Validate 4D
-    let expected_proto_size = batch_size * m * height * width;
-    let elem_size = match dtype_bits {
-        32 => std::mem::size_of::<f32>(),
-        16 => std::mem::size_of::<half::f16>(),
-        _ => {
-            println!("Unsupported prototypes dtype_bits: {}", dtype_bits);
-            return Err(rustler::Error::BadArg);
-        }
-    };
-
-    // Validate coefficients
-    if coefficients.len() != m {
-        println!(
-            "Invalid coefficients length: {}, expected: {}",
-            coefficients.len(),
-            m
-        );
-        return Err(rustler::Error::BadArg);
-    }
-
-    // Validate prototypes binary
-    let protos_bytes = prototypes_bin.as_slice();
-    if protos_bytes.len() != expected_proto_size * elem_size {
-        println!(
-            "Invalid prototypes binary size: {}, expected: {}",
-            protos_bytes.len(),
-            expected_proto_size * elem_size
-        );
-        return Err(rustler::Error::BadArg);
-    }
-    let protos_vec = bytes_to_f32_vec(protos_bytes, dtype_bits, expected_proto_size)
-        .map_err(|_| rustler::Error::BadArg)?;
-    let protos_slice: &[f32] = &protos_vec;
-
-    // Assume single batch
-    if batch_size != 1 {
-        println!("Batch size not 1: {}", batch_size);
-        return Err(rustler::Error::BadArg);
-    }
-
-    // Reshape to 3D view
-    let proto_3d =
-        ArrayView3::<f32>::from_shape((m, height, width), protos_slice).map_err(|e| {
-            println!("ArrayView3 error: {:?}", e);
-            rustler::Error::BadArg
-        })?;
-
-    // Weighted sum
-    let mut output = Array2::<f32>::zeros((height, width));
-    for i in 0..m {
-        let proto_slice = proto_3d.slice(s![i, .., ..]);
-        let weighted = proto_slice.mapv(|x| x * coefficients[i]);
-        output += &weighted;
-    }
-
-    // Sigmoid and threshold
-    let sigmoid = output.mapv(|x| 1.0 / (1.0 + (-x).exp()));
-    let binary = sigmoid.mapv(|x| if x >= threshold { 255u8 } else { 0u8 });
-    let binary_vec = binary
-        .to_shape(height * width)
-        .map_err(|e| {
-            println!("Flatten error: {:?}", e);
-            rustler::Error::BadArg
-        })?
-        .to_vec();
-
-    // Return binary
-    let mut new_bin = NewBinary::new(env, binary_vec.len());
-    new_bin.as_mut_slice().copy_from_slice(&binary_vec);
-    Ok(new_bin.into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::bytes_to_f32_vec;
-
-    #[test]
-    fn bytes_to_f32_vec_f32_roundtrip() {
-        let values: [f32; 4] = [0.0, 1.5, -2.25, 3.0];
-        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-
-        let out = bytes_to_f32_vec(&bytes, 32, values.len()).expect("f32 path should succeed");
-        assert_eq!(out, values);
-    }
-
-    #[test]
-    fn bytes_to_f32_vec_f16_widens_to_f32() {
-        let values: [half::f16; 4] = [
-            half::f16::from_f32(0.0),
-            half::f16::from_f32(1.5),
-            half::f16::from_f32(-2.25),
-            half::f16::from_f32(3.0),
-        ];
-        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-
-        let out = bytes_to_f32_vec(&bytes, 16, values.len()).expect("f16 path should succeed");
-        assert_eq!(out, vec![0.0f32, 1.5, -2.25, 3.0]);
-    }
-
-    #[test]
-    fn bytes_to_f32_vec_rejects_unknown_dtype() {
-        let bytes = [0u8; 8];
-        assert!(bytes_to_f32_vec(&bytes, 8, 2).is_err());
-    }
 }

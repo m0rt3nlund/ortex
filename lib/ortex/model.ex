@@ -136,23 +136,6 @@ defmodule Ortex.Model do
     {{ptr, Tuple.to_list(shape), Atom.to_string(type_atom), bits, device_index}, keepalive}
   end
 
-  def create_mask(coefficients, mask_prototypes, threshold \\ 0.5) do
-    prototypes_bin = Nx.to_binary(mask_prototypes)
-    # Tuple like {1, 32, 240, 240}
-    {_, _, width, height} = proto_shape = Nx.shape(mask_prototypes)
-    {_, dtype_bits} = Nx.type(mask_prototypes)
-
-    Ortex.Native.create_mask(coefficients, prototypes_bin, proto_shape, dtype_bits, threshold)
-    |> case do
-      binary_mask when is_binary(binary_mask) ->
-        binary_mask
-        |> Nx.from_binary(:u8)
-        |> Nx.reshape({width, height})
-
-      error ->
-        error
-    end
-  end
 end
 
 defimpl Inspect, for: Ortex.Model do
