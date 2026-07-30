@@ -1,8 +1,7 @@
 //! # Ortex
 //! Rust bindings between [ONNX Runtime](https://github.com/microsoft/onnxruntime) and
 //! Erlang/Elixir using [Ort](https://docs.rs/ort) and [Rustler](https://docs.rs/rustler).
-//! These are only meant to be accessed via the NIF interface provided by Rustler and not
-//! directly.
+//! These are only meant to be accessed via the NIF interface provided by Rustler and not directly.
 
 mod constants;
 mod cuda_preprocess;
@@ -47,7 +46,7 @@ fn show_session(
     Vec<(String, String, Option<Vec<i64>>)>,
     Vec<(String, String, Option<Vec<i64>>)>,
 )> {
-    model::show(model).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
+    Ok(model::show(model))
 }
 
 #[rustler::nif(schedule = "DirtyIo")]

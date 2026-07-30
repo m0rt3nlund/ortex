@@ -13,6 +13,12 @@ use rustler::{Atom, Env, NifResult};
 
 use ort::execution_providers::ExecutionProviderDispatch;
 use ort::session::builder::GraphOptimizationLevel;
+use std::sync::{Mutex, OnceLock};
+
+pub fn cuda_init_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// A faster (unsafe) way of creating an Array from an Erlang binary
 fn initialize_from_raw_ptr<T>(ptr: *const T, shape: &[Ix]) -> ArrayViewMut<'_, T, IxDyn> {
@@ -20,19 +26,7 @@ fn initialize_from_raw_ptr<T>(ptr: *const T, shape: &[Ix]) -> ArrayViewMut<'_, T
     array
 }
 
-/// Given a Binary term, shape, and dtype from the BEAM, constructs an OrtexTensor and
-/// returns the reference to be used as an Nx.Backend representation.
-///
-/// # Example
-///
-/// ```elixir
-/// bin = <<1, 0, 0, 0, 1, 0, 0, 0>>
-/// ```
-///
-/// Create a shape `[2]` u32 OrtexTensor from a binary of 8 bytes
-/// ```elixir
-/// {:ok, reference} = from_binary(bin, {2}, {:u, 32})
-/// ```
+/// Given a Binary term, shape, and dtype from the BEAM, constructs an OrtexTensor
 pub fn from_binary(
     bin: Binary,
     shape: Vec<usize>,

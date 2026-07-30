@@ -175,6 +175,7 @@ static KERNEL: OnceLock<Result<KernelState, String>> = OnceLock::new();
 fn kernel_state() -> Result<&'static KernelState, String> {
     KERNEL
         .get_or_init(|| {
+            let _guard = crate::utils::cuda_init_lock().lock().unwrap();
             let ctx = CudaContext::new(0).map_err(|e| format!("CudaContext::new failed: {e:?}"))?;
             let stream = ctx.default_stream();
             let ptx = compile_ptx(KERNEL_SRC).map_err(|e| format!("NVRTC compile failed: {e:?}"))?;
