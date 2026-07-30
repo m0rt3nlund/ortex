@@ -38,7 +38,7 @@ defmodule Ortex.MixProject do
       # {:exla, "~> 0.6", only: :dev},
       # {:torchx, "~> 0.6", only: :dev}
       {:typed_struct, "~> 0.3.0"},
-      {:evision, "~> 0.2.14"}
+      {:evision, "~> 1.0.1-rc.0"}
       # {:torchx, "~> 0.10"}
     ]
   end
