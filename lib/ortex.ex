@@ -51,4 +51,10 @@ defmodule Ortex do
 
   """
   defdelegate run(model, tensors), to: Ortex.Model
+
+  @doc """
+  Explicitly tears down a model's onnxruntime session now, blocking until its dedicated
+  worker thread has fully exited, instead of waiting for the resource to be garbage collected.
+  """
+  defdelegate unload(model), to: Ortex.Model
 end
