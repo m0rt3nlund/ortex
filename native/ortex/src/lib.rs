@@ -4,6 +4,7 @@
 //! These are only meant to be accessed via the NIF interface provided by Rustler and not directly.
 
 mod constants;
+mod cuda_worker;
 mod model;
 mod tensor;
 mod utils;
