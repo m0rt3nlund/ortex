@@ -3,7 +3,6 @@
 
 use crate::tensor::OrtexTensor;
 use crate::utils::{is_bool_input, map_opt_level};
-use ex_mas_ai::cuda_worker;
 use ndarray::{Array, ArrayView, IxDyn};
 use std::convert::TryInto;
 
