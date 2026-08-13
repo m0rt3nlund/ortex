@@ -13,7 +13,7 @@ path = "src/lib.rs"
 resolver = "2"
 
 [dependencies]
-ex_mas_ai = {git = "ssh://git@versioning.unidash.no/maskon-as/client/ex_mas_ai.git", tag = "v0.1.0"}
+ex_mas_ai = {git = "ssh://git@versioning.unidash.no/maskon-as/client/ex_mas_ai.git", tag = "v0.1.1"}
 half = "2.7.1"
 ndarray = "0.16.1"
 num-traits = "0.2.19"
