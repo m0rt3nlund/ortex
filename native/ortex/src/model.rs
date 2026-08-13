@@ -1,9 +1,9 @@
 //! Abstractions for creating an ONNX Runtime Session and Environment
 //!  which can be safely passed to and from the BEAM.
 
-use crate::cuda_worker;
 use crate::tensor::OrtexTensor;
 use crate::utils::{is_bool_input, map_opt_level};
+use ex_mas_ai::cuda_worker;
 use ndarray::{Array, ArrayView, IxDyn};
 use std::convert::TryInto;
 
@@ -17,7 +17,23 @@ use rustler::types::Binary;
 use rustler::Atom;
 use rustler::Resource;
 use rustler::ResourceArc;
+use std::collections::HashMap;
 use std::error::Error as StdError;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+/// All live sessions, keyed by id. Only ever touched from inside a job
+/// dispatched to `ex_mas_ai::cuda_worker::run`
+fn sessions() -> &'static Mutex<HashMap<u64, Session>> {
+    static SESSIONS: OnceLock<Mutex<HashMap<u64, Session>>> = OnceLock::new();
+    SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+fn next_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 pub struct OrtexModel {
     id: u64,
@@ -27,8 +43,8 @@ impl Resource for OrtexModel {}
 impl OrtexModel {
     fn shutdown(&self) {
         let id = self.id;
-        cuda_worker::run(move |sessions| {
-            sessions.remove(&id);
+        cuda_worker::run(move || {
+            sessions().lock().unwrap().remove(&id);
         });
     }
 }
@@ -49,14 +65,14 @@ pub fn init(
     eps: Vec<ExecutionProviderDispatch>,
     opt: i32,
 ) -> Result<OrtexModel, Error> {
-    let id = cuda_worker::next_id();
+    let id = next_id();
 
-    cuda_worker::run(move |sessions| {
+    cuda_worker::run(move || {
         let session = Session::builder()?
             .with_optimization_level(map_opt_level(opt))?
             .with_execution_providers(eps)?
             .commit_from_file(model_path)?;
-        sessions.insert(id, session);
+        sessions().lock().unwrap().insert(id, session);
         Ok::<(), Error>(())
     })?;
 
@@ -71,7 +87,8 @@ pub fn show(
 ) {
     let id = model.id;
 
-    cuda_worker::run(move |sessions| {
+    cuda_worker::run(move || {
+        let sessions = sessions().lock().unwrap();
         let session = sessions.get(&id).expect("model has been unloaded");
 
         let mut inputs = Vec::new();
@@ -102,7 +119,8 @@ pub fn run(
 {
     let id = model.id;
 
-    cuda_worker::run(move |sessions| {
+    cuda_worker::run(move || {
+        let mut sessions = sessions().lock().unwrap();
         let session = sessions.get_mut(&id).expect("model has been unloaded");
 
         // Bool-converted temporaries must outlive ortified_inputs since inputs borrow from them.
@@ -167,7 +185,8 @@ pub fn run_binary<'a>(
         })
         .collect();
 
-    cuda_worker::run(move |sessions| {
+    cuda_worker::run(move || {
+        let mut sessions = sessions().lock().unwrap();
         let session = sessions.get_mut(&id).expect("model has been unloaded");
         let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
@@ -232,7 +251,8 @@ pub fn run_cuda(
     let id = model.id;
     let inputs = inputs.to_vec();
 
-    cuda_worker::run(move |sessions| {
+    cuda_worker::run(move || {
+        let mut sessions = sessions().lock().unwrap();
         let session = sessions.get_mut(&id).expect("model has been unloaded");
         let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
