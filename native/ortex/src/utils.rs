@@ -13,12 +13,6 @@ use rustler::{Atom, Env, NifResult};
 
 use ort::execution_providers::ExecutionProviderDispatch;
 use ort::session::builder::GraphOptimizationLevel;
-use std::sync::{Mutex, OnceLock};
-
-pub fn cuda_init_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
 
 /// A faster (unsafe) way of creating an Array from an Erlang binary
 fn initialize_from_raw_ptr<T>(ptr: *const T, shape: &[Ix]) -> ArrayViewMut<'_, T, IxDyn> {
