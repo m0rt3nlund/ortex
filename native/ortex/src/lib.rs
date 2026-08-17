@@ -129,6 +129,12 @@ pub fn concatenate<'a>(
 
 pub fn on_load(env: Env) -> bool {
     tracing_subscriber::fmt::init();
+
+    // create the global ort env
+    if let Err(e) = ort::init().commit() {
+        eprintln!("ortex: failed to initialize ort environment: {e}");
+    }
+
     env.register::<OrtexModel>().is_ok() && env.register::<OrtexTensor>().is_ok()
 }
 
