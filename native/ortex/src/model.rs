@@ -19,12 +19,7 @@ use rustler::ResourceArc;
 use std::error::Error as StdError;
 use std::sync::Mutex;
 
-/// Holds the model's ONNX Runtime session. `Session::run` in this `ort`
-/// version takes `&mut self`, so exclusive access is needed per call -- a
-/// plain `Mutex` here only serializes calls *to this one model*; a different
-/// `OrtexModel` has its own independent `Mutex`, so different models still
-/// run fully concurrently. `Session` itself is `Send` + `Sync`
-/// (https://github.com/microsoft/onnxruntime/issues/114), so this is safe.
+/// Holds the model's ONNX Runtime session
 pub struct OrtexModel {
     pub session: Mutex<Session>,
 }
