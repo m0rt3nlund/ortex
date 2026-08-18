@@ -17,17 +17,18 @@ use rustler::Atom;
 use rustler::Resource;
 use rustler::ResourceArc;
 use std::error::Error as StdError;
+use std::sync::Mutex;
 
-/// Holds the model's ONNX Runtime session. `Session::run` is thread-safe
-/// (Environment is also global and thread-safe), so this can be called
-/// concurrently from the BEAM without any additional locking.
-/// https://github.com/microsoft/onnxruntime/issues/114
+/// Holds the model's ONNX Runtime session. `Session::run` in this `ort`
+/// version takes `&mut self`, so exclusive access is needed per call -- a
+/// plain `Mutex` here only serializes calls *to this one model*; a different
+/// `OrtexModel` has its own independent `Mutex`, so different models still
+/// run fully concurrently. `Session` itself is `Send` + `Sync`
+/// (https://github.com/microsoft/onnxruntime/issues/114), so this is safe.
 pub struct OrtexModel {
-    pub session: Session,
+    pub session: Mutex<Session>,
 }
 impl Resource for OrtexModel {}
-
-unsafe impl Sync for OrtexModel {}
 
 /// The execution providers are Atoms from Erlang/Elixir.
 pub fn init(
@@ -40,7 +41,9 @@ pub fn init(
         .with_execution_providers(eps)?
         .commit_from_file(model_path)?;
 
-    Ok(OrtexModel { session })
+    Ok(OrtexModel {
+        session: Mutex::new(session),
+    })
 }
 
 pub fn show(
@@ -49,7 +52,7 @@ pub fn show(
     Vec<(String, String, Option<Vec<i64>>)>,
     Vec<(String, String, Option<Vec<i64>>)>,
 ) {
-    let session = &model.session;
+    let session = model.session.lock().unwrap();
 
     let mut inputs = Vec::new();
     for input in session.inputs.iter() {
@@ -76,7 +79,7 @@ pub fn run(
     inputs: Vec<ResourceArc<OrtexTensor>>,
 ) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError + Send + Sync>>
 {
-    let session = &model.session;
+    let mut session = model.session.lock().unwrap();
 
     // Bool-converted temporaries must outlive ortified_inputs since inputs borrow from them.
     let bool_converted: Vec<OrtexTensor> = inputs
@@ -130,7 +133,7 @@ pub fn run_binary<'a>(
     inputs: &[(Binary<'a>, Vec<usize>, String, usize)],
 ) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError + Send + Sync>>
 {
-    let session = &model.session;
+    let mut session = model.session.lock().unwrap();
     let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
     for ((bin, shape, dtype_str, dtype_bits), onnx_input) in inputs.iter().zip(&session.inputs) {
@@ -190,7 +193,7 @@ pub fn run_cuda(
     inputs: &[(u64, Vec<i64>, String, usize, i32)],
 ) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError + Send + Sync>>
 {
-    let session = &model.session;
+    let mut session = model.session.lock().unwrap();
     let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
     for (ptr, shape, dtype_str, dtype_bits, device_index) in inputs.iter() {
