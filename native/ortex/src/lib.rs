@@ -30,8 +30,7 @@ fn init(
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
-fn unload(model: ResourceArc<model::OrtexModel>) {
-    model::unload(model);
+fn unload(_model: ResourceArc<model::OrtexModel>) {
 }
 
 #[rustler::nif]
