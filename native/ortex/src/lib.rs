@@ -30,8 +30,10 @@ fn init(
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
-fn unload(model: ResourceArc<model::OrtexModel>) {
-    model::unload(model);
+fn unload(_model: ResourceArc<model::OrtexModel>) {
+    // No-op: OrtexModel's session is released automatically via Rust's Drop
+    // once Elixir no longer references this resource. Kept only for API
+    // compatibility with existing callers of Ortex.unload/1.
 }
 
 #[rustler::nif]
