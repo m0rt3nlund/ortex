@@ -69,6 +69,21 @@ fn run_cuda(
     model::run_cuda(model, &inputs).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
 }
 
+#[rustler::nif(schedule = "DirtyIo")]
+#[allow(clippy::type_complexity)]
+fn run_cuda_pinned(
+    model: ResourceArc<model::OrtexModel>,
+    inputs: Vec<(u64, Vec<i64>, String, usize, i32)>,
+    cuda_output_names: Vec<String>,
+    cuda_device_index: i32,
+) -> NifResult<(
+    Vec<(String, ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>,
+    Vec<(String, u64, Vec<i64>, String, usize, i32, ResourceArc<model::OrtexCudaOutput>)>,
+)> {
+    model::run_cuda_pinned(model, &inputs, &cuda_output_names, cuda_device_index)
+        .map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
+}
+
 #[rustler::nif(schedule = "DirtyCpu")]
 fn from_binary(bin: Binary, shape: Term, dtype: Term) -> NifResult<ResourceArc<OrtexTensor>> {
     let shape: Vec<usize> = rustler::types::tuple::get_tuple(shape)?
@@ -134,7 +149,9 @@ pub fn on_load(env: Env) -> bool {
         eprintln!("ortex: failed to initialize ort environment: {e}");
     }
 
-    env.register::<OrtexModel>().is_ok() && env.register::<OrtexTensor>().is_ok()
+    env.register::<OrtexModel>().is_ok()
+        && env.register::<OrtexTensor>().is_ok()
+        && env.register::<model::OrtexCudaOutput>().is_ok()
 }
 
 rustler::init!(

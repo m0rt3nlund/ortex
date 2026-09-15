@@ -53,6 +53,15 @@ defmodule Ortex do
   defdelegate run(model, tensors), to: Ortex.Model
 
   @doc """
+  Like `run/2`, but for a raw CUDA pointer input (`%Ortex.CudaTensor{}`),
+  additionally pins each output named in `cuda_output_names` to CUDA device
+  memory via IoBinding instead of copying it to the host. Returns a map from
+  ONNX output name to either an `%Nx.Tensor{}` (host outputs) or an
+  `%Ortex.CudaOutput{}` (the pinned ones).
+  """
+  defdelegate run_pinned(model, cuda_tensor, cuda_output_names), to: Ortex.Model
+
+  @doc """
   Explicitly tears down a model's onnxruntime session now, blocking until its dedicated
   worker thread has fully exited, instead of waiting for the resource to be garbage collected.
   """
