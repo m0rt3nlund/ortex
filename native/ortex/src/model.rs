@@ -9,8 +9,8 @@ use std::convert::TryInto;
 use ort::execution_providers::ExecutionProviderDispatch;
 use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
 use ort::session::Session;
-use ort::tensor::Shape;
-use ort::value::{TensorRef, TensorRefMut};
+use ort::tensor::{Shape, TensorElementType};
+use ort::value::{DynTensor, TensorRef, TensorRefMut, ValueType};
 use ort::Error;
 use rustler::types::Binary;
 use rustler::Atom;
@@ -24,6 +24,30 @@ pub struct OrtexModel {
     pub session: Mutex<Session>,
 }
 impl Resource for OrtexModel {}
+
+/// Owns an ONNX Runtime output `Value` that was bound to CUDA device memory via
+/// IoBinding (see `run_cuda_pinned`), keeping its underlying device buffer alive
+/// for as long as Elixir holds a reference to this resource. 
+pub struct OrtexCudaOutput {
+    #[allow(dead_code)]
+    pub value: DynTensor,
+}
+// Safety: `value` only ever exposes a raw device pointer (via `data_ptr`) read
+// by native code on the CUDA-bound thread that consumes it.
+unsafe impl Send for OrtexCudaOutput {}
+unsafe impl Sync for OrtexCudaOutput {}
+impl Resource for OrtexCudaOutput {}
+// `ort::Value` holds a `Box<dyn Any>` internally (its optional backing store),
+// and auto traits don't propagate through an unconstrained trait object.
+impl std::panic::RefUnwindSafe for OrtexCudaOutput {}
+
+fn tensor_element_dtype(ty: TensorElementType) -> Result<(String, usize), Box<dyn StdError + Send + Sync>> {
+    match ty {
+        TensorElementType::Float32 => Ok(("f".to_string(), 32)),
+        TensorElementType::Float16 => Ok(("f".to_string(), 16)),
+        other => Err(format!("unsupported cuda output dtype: {other:?}").into()),
+    }
+}
 
 /// The execution providers are Atoms from Erlang/Elixir.
 pub fn init(
@@ -223,4 +247,93 @@ pub fn run_cuda(
     }
 
     Ok(collected_outputs)
+}
+
+/// Same CUDA device-pointer inputs as `run_cuda`, but additionally pins each
+/// output named in `cuda_output_names` to CUDA device memory via IoBinding
+/// instead of letting ONNX Runtime copy it to the host.
+#[allow(clippy::too_many_arguments)]
+pub fn run_cuda_pinned(
+    model: ResourceArc<OrtexModel>,
+    inputs: &[(u64, Vec<i64>, String, usize, i32)],
+    cuda_output_names: &[String],
+    cuda_device_index: i32,
+) -> Result<
+    (
+        Vec<(String, ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>,
+        Vec<(String, u64, Vec<i64>, String, usize, i32, ResourceArc<OrtexCudaOutput>)>,
+    ),
+    Box<dyn StdError + Send + Sync>,
+> {
+    let mut session = model.session.lock().unwrap();
+
+    let mut binding = session.create_binding()?;
+
+    for ((ptr, shape, dtype_str, dtype_bits, device_index), onnx_input) in
+        inputs.iter().zip(&session.inputs)
+    {
+        let info = MemoryInfo::new(AllocationDevice::CUDA, *device_index, AllocatorType::Device, MemoryType::Default)?;
+        let data = *ptr as usize as *mut ort_sys::c_void;
+
+        macro_rules! bind_cuda_input {
+            ($t:ty) => {{
+                let tensor_ref: TensorRefMut<'_, $t> =
+                    unsafe { TensorRefMut::from_raw(info.clone(), data, Shape::from(shape.clone()))? };
+                binding.bind_input(onnx_input.name.clone(), &tensor_ref)?;
+            }};
+        }
+
+        match (dtype_str.as_ref(), *dtype_bits) {
+            ("f", 32) => bind_cuda_input!(f32),
+            ("f", 16) => bind_cuda_input!(half::f16),
+            _ => return Err(format!("unsupported cuda dtype ({}, {})", dtype_str, dtype_bits).into()),
+        };
+    }
+
+    let cpu_info = MemoryInfo::new(AllocationDevice::CPU, 0, AllocatorType::Device, MemoryType::Default)?;
+    let cuda_out_info = MemoryInfo::new(AllocationDevice::CUDA, cuda_device_index, AllocatorType::Device, MemoryType::Default)?;
+
+    for output in session.outputs.iter() {
+        if cuda_output_names.iter().any(|n| n == &output.name) {
+            binding.bind_output_to_device(output.name.clone(), &cuda_out_info)?;
+        } else {
+            binding.bind_output_to_device(output.name.clone(), &cpu_info)?;
+        }
+    }
+
+    let outputs = session.run_binding(&binding)?;
+
+    let mut host_outputs = Vec::new();
+    let mut cuda_outputs = Vec::new();
+
+    for (name, val) in outputs {
+        let name = name.to_string();
+
+        if cuda_output_names.iter().any(|n| n == &name) {
+            let dyn_tensor: DynTensor = val.downcast()?;
+            let ptr = dyn_tensor.data_ptr() as u64;
+            let ValueType::Tensor { ty, shape, .. } = dyn_tensor.dtype() else {
+                return Err(format!("output `{name}` bound to CUDA memory is not a tensor").into());
+            };
+            let (dtype_str, dtype_bits) = tensor_element_dtype(*ty)?;
+            let shape_vec: Vec<i64> = shape.iter().copied().collect();
+
+            cuda_outputs.push((
+                name,
+                ptr,
+                shape_vec,
+                dtype_str,
+                dtype_bits,
+                cuda_device_index,
+                ResourceArc::new(OrtexCudaOutput { value: dyn_tensor }),
+            ));
+        } else {
+            let ortextensor: OrtexTensor = (&val).try_into()?;
+            let shape = ortextensor.shape();
+            let (dtype, bits) = ortextensor.dtype();
+            host_outputs.push((name, ResourceArc::new(ortextensor), shape, dtype, bits));
+        }
+    }
+
+    Ok((host_outputs, cuda_outputs))
 }

@@ -36,10 +36,8 @@ defmodule Ortex.MixProject do
       {:tokenizers, "~> 0.5", only: :dev},
       {:ex_doc, "~> 0.38", only: :dev, runtime: false},
       # {:exla, "~> 0.6", only: :dev},
-      # {:torchx, "~> 0.6", only: :dev}
       {:typed_struct, "~> 0.3.0"},
       {:evision, "~> 1.0", optional: true}
-      # {:torchx, "~> 0.10"}
     ]
   end
 
