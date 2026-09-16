@@ -11,7 +11,8 @@ use rustler::types::Binary;
 use rustler::ResourceArc;
 use rustler::{Atom, Env, NifResult};
 
-use ort::execution_providers::ExecutionProviderDispatch;
+use ort::execution_providers::cuda::ConvAlgorithmSearch;
+use ort::execution_providers::{ArenaExtendStrategy, ExecutionProviderDispatch};
 use ort::session::builder::GraphOptimizationLevel;
 
 /// A faster (unsafe) way of creating an Array from an Erlang binary
@@ -88,10 +89,52 @@ pub fn map_eps(
     eps.into_iter()
         .map(
             |(e, opts)| match &e.to_term(env).atom_to_string().unwrap()[..] {
-                CPU => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
-                CUDA => ort::execution_providers::cuda::CUDAExecutionProvider::default()
-                    .build()
-                    .error_on_failure(),
+                CPU => ort::execution_providers::cpu::CPU::default().build(),
+                CUDA => {
+                    let mut device_id: i32 = 0;
+                    let mut memory_limit: Option<usize> = None;
+                    let mut arena_extend_strategy: Option<ArenaExtendStrategy> = None;
+                    let mut conv_algo_search: Option<ConvAlgorithmSearch> = None;
+                    let mut conv_max_workspace: Option<bool> = None;
+                    for (k, v) in &opts {
+                        match k.as_str() {
+                            "device_id" => device_id = v.parse().unwrap_or(device_id),
+                            "gpu_mem_limit" => memory_limit = v.parse().ok(),
+                            "arena_extend_strategy" => {
+                                arena_extend_strategy = match v.as_str() {
+                                    "same_as_requested" => Some(ArenaExtendStrategy::SameAsRequested),
+                                    "next_power_of_two" => Some(ArenaExtendStrategy::NextPowerOfTwo),
+                                    _ => None,
+                                }
+                            }
+                            "cudnn_conv_algo_search" => {
+                                conv_algo_search = match v.as_str() {
+                                    "heuristic" => Some(ConvAlgorithmSearch::Heuristic),
+                                    "exhaustive" => Some(ConvAlgorithmSearch::Exhaustive),
+                                    "default" => Some(ConvAlgorithmSearch::Default),
+                                    _ => None,
+                                }
+                            }
+                            "cudnn_conv_use_max_workspace" => conv_max_workspace = Some(v == "true"),
+                            _ => {}
+                        }
+                    }
+                    let mut ep =
+                        ort::execution_providers::cuda::CUDA::default().with_device_id(device_id);
+                    if let Some(limit) = memory_limit {
+                        ep = ep.with_memory_limit(limit);
+                    }
+                    if let Some(strategy) = arena_extend_strategy {
+                        ep = ep.with_arena_extend_strategy(strategy);
+                    }
+                    if let Some(search) = conv_algo_search {
+                        ep = ep.with_conv_algorithm_search(search);
+                    }
+                    if let Some(enable) = conv_max_workspace {
+                        ep = ep.with_conv_max_workspace(enable);
+                    }
+                    ep.build().error_on_failure()
+                }
                 TENSORRT => {
                     let mut workspace_size: usize = 1_073_741_824;
                     let mut engine_cache = false;
@@ -111,7 +154,7 @@ pub fn map_eps(
                         }
                     }
                     let ep =
-                        ort::execution_providers::tensorrt::TensorRTExecutionProvider::default()
+                        ort::execution_providers::tensorrt::TensorRT::default()
                             .with_max_workspace_size(workspace_size)
                             .with_engine_cache(engine_cache)
                             .with_fp16(fp16)
@@ -123,20 +166,20 @@ pub fn map_eps(
                     };
                     ep.build().error_on_failure()
                 }
-                ACL => ort::execution_providers::acl::ACLExecutionProvider::default().build(),
-                ONEDNN => {
-                    ort::execution_providers::onednn::OneDNNExecutionProvider::default().build()
-                }
-                COREML => {
-                    ort::execution_providers::coreml::CoreMLExecutionProvider::default().build()
-                }
+                #[cfg(feature = "acl")]
+                ACL => ort::execution_providers::acl::ACL::default().build(),
+                #[cfg(feature = "onednn")]
+                ONEDNN => ort::execution_providers::onednn::OneDNN::default().build(),
+                #[cfg(feature = "coreml")]
+                COREML => ort::execution_providers::coreml::CoreML::default().build(),
                 DIRECTML => {
-                    ort::execution_providers::directml::DirectMLExecutionProvider::default()
+                    ort::execution_providers::directml::DirectML::default()
                         .build()
                         .error_on_failure()
                 }
-                ROCM => ort::execution_providers::rocm::ROCmExecutionProvider::default().build(),
-                _ => ort::execution_providers::cpu::CPUExecutionProvider::default().build(),
+                #[cfg(feature = "rocm")]
+                ROCM => ort::execution_providers::rocm::ROCm::default().build(),
+                _ => ort::execution_providers::cpu::CPU::default().build(),
             },
         )
         .collect()
@@ -154,8 +197,8 @@ pub fn map_opt_level(opt: i32) -> GraphOptimizationLevel {
 
 pub fn is_bool_input(inp: &ort::value::ValueType) -> bool {
     match inp {
-        ort::value::ValueType::Tensor { ty, .. } => ty == &ort::tensor::TensorElementType::Bool,
-        ort::value::ValueType::Map { value, .. } => value == &ort::tensor::TensorElementType::Bool,
+        ort::value::ValueType::Tensor { ty, .. } => ty == &ort::value::TensorElementType::Bool,
+        ort::value::ValueType::Map { value, .. } => value == &ort::value::TensorElementType::Bool,
         ort::value::ValueType::Sequence(boxed_input) => is_bool_input(boxed_input),
         ort::value::ValueType::Optional(boxed_input) => is_bool_input(boxed_input),
     }

@@ -2,7 +2,7 @@
 use core::convert::TryFrom;
 use ndarray::prelude::*;
 use ndarray::{ArrayBase, ArrayView, Data, IxDyn, IxDynImpl, ViewRepr};
-use ort::value::{TensorRef, Value};
+use ort::value::{TensorElementType, TensorRef, Value};
 use ort::Error;
 use rustler::Atom;
 use rustler::Resource;
@@ -245,7 +245,7 @@ impl TryFrom<&Value> for OrtexTensor {
         };
 
         let tensor = match ty {
-            ort::tensor::TensorElementType::Bfloat16 => {
+            TensorElementType::Bfloat16 => {
                 let (shape, data) = e.try_extract_tensor::<half::bf16>()?;
                 let shape_vec: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
                 let shape = IxDyn(&shape_vec);
@@ -253,7 +253,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::bf16(array)
             }
-            ort::tensor::TensorElementType::Float16 => {
+            TensorElementType::Float16 => {
                 let (shape, data) = e.try_extract_tensor::<half::f16>()?;
                 let shape_vec: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
                 let shape = IxDyn(&shape_vec);
@@ -261,7 +261,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::f16(array)
             }
-            ort::tensor::TensorElementType::Float32 => {
+            TensorElementType::Float32 => {
                 let (shape, data) = e.try_extract_tensor::<f32>()?;
                 let shape_vec: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
                 let shape = IxDyn(&shape_vec);
@@ -269,7 +269,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::f32(array)
             }
-            ort::tensor::TensorElementType::Float64 => {
+            TensorElementType::Float64 => {
                 let (shape, data) = e.try_extract_tensor::<f64>()?;
                 let shape_vec: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
                 let shape = IxDyn(&shape_vec);
@@ -277,7 +277,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::f64(array)
             }
-            ort::tensor::TensorElementType::Uint8 => {
+            TensorElementType::Uint8 => {
                 let (shape, data) = e.try_extract_tensor::<u8>()?;
                 let shape_vec: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
                 let shape = IxDyn(&shape_vec);
@@ -285,7 +285,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::u8(array)
             }
-            ort::tensor::TensorElementType::Uint16 => {
+            TensorElementType::Uint16 => {
                 //OrtexTensor::u8(<(&ort::tensor::Shape, &[u16])>::to_owned())
 
                 let (shape, data) = e.try_extract_tensor::<u16>()?;
@@ -297,7 +297,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::u8(array)
             }
-            ort::tensor::TensorElementType::Uint32 => {
+            TensorElementType::Uint32 => {
                 //OrtexTensor::u8(<(&ort::tensor::Shape, &[u32])>::to_owned())
 
                 let (shape, data) = e.try_extract_tensor::<u32>()?;
@@ -309,7 +309,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::u8(array)
             }
-            ort::tensor::TensorElementType::Uint64 => {
+            TensorElementType::Uint64 => {
                 //OrtexTensor::u8(<(&ort::tensor::Shape, &[u64])>::to_owned())
 
                 let (shape, data) = e.try_extract_tensor::<u64>()?;
@@ -321,7 +321,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::u8(array)
             }
-            ort::tensor::TensorElementType::Int8 => {
+            TensorElementType::Int8 => {
                 //OrtexTensor::u8(<(&ort::tensor::Shape, &[i8])>::to_owned())
 
                 let (shape, data) = e.try_extract_tensor::<i8>()?;
@@ -333,7 +333,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::u8(array)
             }
-            ort::tensor::TensorElementType::Int16 => {
+            TensorElementType::Int16 => {
                 //OrtexTensor::u8(<(&ort::tensor::Shape, &[u16])>::to_owned())
 
                 let (shape, data) = e.try_extract_tensor::<i16>()?;
@@ -345,7 +345,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::u8(array)
             }
-            ort::tensor::TensorElementType::Int32 => {
+            TensorElementType::Int32 => {
                 //OrtexTensor::u8(<(&ort::tensor::Shape, &[i16])>::to_owned())
 
                 let (shape, data) = e.try_extract_tensor::<i32>()?;
@@ -357,7 +357,7 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::u8(array)
             }
-            ort::tensor::TensorElementType::Int64 => {
+            TensorElementType::Int64 => {
                 //OrtexTensor::u8(<(&ort::tensor::Shape, &[i64])>::to_owned())
 
                 let (shape, data) = e.try_extract_tensor::<i64>()?;
@@ -369,11 +369,11 @@ impl TryFrom<&Value> for OrtexTensor {
                     .map_err(|e| Error::from(Box::new(e) as Box<dyn StdError + Send + Sync>))?;
                 OrtexTensor::u8(array)
             }
-            ort::tensor::TensorElementType::String => {
+            TensorElementType::String => {
                 todo!("Can't return string tensors")
             }
             // map the output into u8 space
-            ort::tensor::TensorElementType::Bool => {
+            TensorElementType::Bool => {
                 let (shape, data) = e.try_extract_tensor::<bool>()?;
                 let shape_vec: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
                 let shape = IxDyn(&shape_vec);

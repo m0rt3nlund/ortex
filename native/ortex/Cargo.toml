@@ -14,16 +14,15 @@ resolver = "2"
 
 [dependencies]
 half = "2.7.1"
-ndarray = "0.16.1"
+ndarray = "0.17"
 num-traits = "0.2.19"
-ort = {version = "2.0.0-rc.10", features = [
+ort = {version = "2.0.0-rc.13", features = [
   "half",
   "cuda",
-  # "directml",
-  "tensorrt", 
-  # "coreml",
+  "directml",
+  "tensorrt",
 ]}
-ort-sys = {version = "=2.0.0-rc.10", default-features = false}
+ort-sys = {version = "=2.0.0-rc.13", default-features = false}
 rustler = "0.37"
 rustls = "0.23.34"
 tracing-subscriber = {version = "0.3", features = ["env-filter", "fmt"]}
@@ -36,7 +35,10 @@ opt-level = 3
 
 [features]
 # ONNXRuntime Execution providers
-# coreml = ["ort/coreml"]
-# directml = ["ort/directml"]
+coreml = ["ort/coreml"]
+directml = ["ort/directml"]
 cuda = ["ort/cuda"]
 tensorrt = ["ort/tensorrt"]
+acl = ["ort/acl"]
+onednn = ["ort/onednn"]
+rocm = ["ort/rocm"]
