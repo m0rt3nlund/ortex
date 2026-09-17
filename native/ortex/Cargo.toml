@@ -26,7 +26,7 @@ tracing-subscriber = {version = "0.3", features = ["env-filter", "fmt"]}
 ort = {version = "2.0.0-rc.13", features = ["half", "cuda", "directml", "tensorrt"]}
 
 [target.'cfg(not(windows))'.dependencies]
-ort = {version = "2.0.0-rc.13", features = ["half", "cuda", "tensorrt"]}
+ort = {version = "2.0.0-rc.13", features = ["half", "cuda", "tensorrt", "load-dynamic"]}
 
 # [profile.dev]
 # debug = true # Enables full DWARF/PDB symbols (default on most platforms)
