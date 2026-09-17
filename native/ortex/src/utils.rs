@@ -172,6 +172,7 @@ pub fn map_eps(
                 ONEDNN => ort::execution_providers::onednn::OneDNN::default().build(),
                 #[cfg(feature = "coreml")]
                 COREML => ort::execution_providers::coreml::CoreML::default().build(),
+                #[cfg(windows)]
                 DIRECTML => {
                     ort::execution_providers::directml::DirectML::default()
                         .build()
