@@ -60,6 +60,24 @@ defmodule Ortex.Model do
   end
 
   @doc false
+  def unload(%Ortex.Model{reference: model}), do: Ortex.Native.unload(model)
+
+  # A pre-built raw CUDA pointer
+  @doc false
+  def run(%Ortex.Model{reference: model}, %Ortex.CudaTensor{} = cuda_tensor) do
+    result =
+      Ortex.Native.run_cuda(model, [
+        {cuda_tensor.ptr, cuda_tensor.shape, cuda_tensor.dtype_str, cuda_tensor.dtype_bits,
+         cuda_tensor.device_index}
+      ])
+
+    keepalive = cuda_tensor.keepalive
+    _ = keepalive
+
+    pack_output(result)
+  end
+
+  @doc false
   def run(%Ortex.Model{} = model, tensor) when not is_tuple(tensor) do
     run(model, {tensor})
   end
@@ -68,34 +86,74 @@ defmodule Ortex.Model do
   def run(%Ortex.Model{reference: model}, tensors) do
     tensor_list = Tuple.to_list(tensors)
 
-    raw_output =
-      if Enum.all?(tensor_list, &cuda_backed?/1) do
-        {cuda_inputs, keepalives} = tensor_list |> Enum.map(&cuda_input/1) |> Enum.unzip()
+    inputs =
+      Enum.map(tensor_list, fn %Nx.Tensor{shape: shape, type: {type_atom, bits}} = tensor ->
+        {Nx.to_binary(tensor), Tuple.to_list(shape), Atom.to_string(type_atom), bits}
+      end)
 
-        result = Ortex.Native.run_cuda(model, cuda_inputs)
+    Ortex.Native.run_binary(model, inputs)
+    |> pack_output()
+  end
 
-        # `keepalives` holds the Torchx tensor resource(s) that the raw
-        # pointers passed to run_cuda above point into. Referencing it here,
-        # after the NIF call returns, keeps the BEAM from collecting that
-        # storage while the NIF call is in flight.
-        _ = keepalives
-        result
-      else
-        inputs =
-          Enum.map(tensor_list, fn %Nx.Tensor{shape: shape, type: {type_atom, bits}} = tensor ->
-            {Nx.to_binary(tensor), Tuple.to_list(shape), Atom.to_string(type_atom), bits}
-          end)
+  # Like `run/2`, but for a raw CUDA pointer input (`%Ortex.CudaTensor{}`),
+  # additionally pins each output named in `cuda_output_names` to CUDA device
+  # memory via IoBinding instead of letting ONNX Runtime copy it to the host.
 
-        Ortex.Native.run_binary(model, inputs)
-      end
+  @doc false
+  def run_pinned(%Ortex.Model{reference: model}, %Ortex.CudaTensor{} = cuda_tensor, cuda_output_names) do
+    {host_outputs, cuda_outputs} =
+      Ortex.Native.run_cuda_pinned(
+        model,
+        [
+          {cuda_tensor.ptr, cuda_tensor.shape, cuda_tensor.dtype_str, cuda_tensor.dtype_bits,
+           cuda_tensor.device_index}
+        ],
+        cuda_output_names,
+        cuda_tensor.device_index
+      )
 
+    keepalive = cuda_tensor.keepalive
+    _ = keepalive
+
+    pack_pinned_output(host_outputs, cuda_outputs)
+  end
+
+  defp pack_pinned_output(host_outputs, cuda_outputs) do
+    host_map =
+      Map.new(host_outputs, fn {name, ref, shape, dtype_atom, dtype_bits} ->
+        {name,
+         %Nx.Tensor{
+           data: %Ortex.Backend{ref: ref},
+           shape: shape |> List.to_tuple(),
+           type: {dtype_atom, dtype_bits},
+           names: List.duplicate(nil, length(shape))
+         }}
+      end)
+
+    cuda_map =
+      Map.new(cuda_outputs, fn {name, ptr, shape, dtype_str, dtype_bits, device_index, keepalive} ->
+        {name,
+         %Ortex.CudaOutput{
+           ptr: ptr,
+           shape: shape,
+           dtype_str: dtype_str,
+           dtype_bits: dtype_bits,
+           device_index: device_index,
+           keepalive: keepalive
+         }}
+      end)
+
+    Map.merge(host_map, cuda_map)
+  end
+
+  # Pack raw_output ({ref, shape, dtype_atom, dtype_bits} tuples
+  defp pack_output(raw_output) do
     output =
       case raw_output do
         {:error, msg} -> raise msg
         output -> output
       end
 
-    # Pack the output into new Ortex.Backend tensor(s)
     output
     |> Enum.map(fn {ref, shape, dtype_atom, dtype_bits} ->
       %Nx.Tensor{
@@ -108,38 +166,6 @@ defmodule Ortex.Model do
     |> List.to_tuple()
   end
 
-  # Only take the zero-copy path for tensors already GPU-resident via Torchx
-  # -- checked via __struct__ rather than a %Torchx.Backend{} pattern so
-  # Ortex doesn't need a compile-time dependency on :torchx. Anything else
-  # (CPU Torchx tensors, Nx.BinaryBackend, etc.) falls back to the existing
-  # to_binary path, which is already efficient for host-resident data.
-  defp cuda_backed?(%Nx.Tensor{data: %{__struct__: Torchx.Backend, ref: {:cuda, _}}}), do: true
-  defp cuda_backed?(_), do: false
-
-  # Returns `{{ptr, shape, dtype_str, dtype_bits, device_index}, keepalive}`.
-  # `keepalive` must be kept referenced by the caller until the NIF call
-  # using `ptr` has returned -- see run/2 above.
-  defp cuda_input(%Nx.Tensor{data: %{ref: ref}, shape: shape, type: {type_atom, bits}}) do
-    {ptr, _shape, _dtype, {_device_type, device_index}, keepalive} = Torchx.data_ptr(ref)
-    {{ptr, Tuple.to_list(shape), Atom.to_string(type_atom), bits, device_index}, keepalive}
-  end
-
-  def create_mask(coefficients, mask_prototypes, threshold \\ 0.5) do
-    prototypes_bin = Nx.to_binary(mask_prototypes)
-    # Tuple like {1, 32, 240, 240}
-    {_, _, width, height} = proto_shape = Nx.shape(mask_prototypes)
-
-    Ortex.Native.create_mask(coefficients, prototypes_bin, proto_shape, threshold)
-    |> case do
-      binary_mask when is_binary(binary_mask) ->
-        binary_mask
-        |> Nx.from_binary(:u8)
-        |> Nx.reshape({width, height})
-
-      error ->
-        error
-    end
-  end
 end
 
 defimpl Inspect, for: Ortex.Model do

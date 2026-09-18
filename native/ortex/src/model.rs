@@ -1,92 +1,91 @@
-//! Abstractions for creating an ONNX Runtime Session and Environment which can be safely
-//! passed to and from the BEAM.
-//!
-//! # Examples
-//!
-//! ```
-//! let model = init("./models/resnet50.onnx", vec![])?;
-//! let (inputs, outputs) = show(model)?;
-//! ```
+//! Abstractions for creating an ONNX Runtime Session and Environment
+//!  which can be safely passed to and from the BEAM.
 
 use crate::tensor::OrtexTensor;
 use crate::utils::{is_bool_input, map_opt_level};
-use ndarray::{s, Array, Array2, ArrayView, ArrayView3, IxDyn};
+use ndarray::{Array, ArrayView, IxDyn};
 use std::convert::TryInto;
 
 use ort::execution_providers::ExecutionProviderDispatch;
 use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
 use ort::session::Session;
-use ort::tensor::Shape;
-use ort::value::{TensorRef, TensorRefMut};
+use ort::value::{Shape, TensorElementType};
+use ort::value::{DynTensor, TensorRef, TensorRefMut, ValueType};
 use ort::Error;
 use rustler::types::Binary;
 use rustler::Atom;
-use rustler::Env;
-use rustler::NewBinary;
 use rustler::Resource;
 use rustler::ResourceArc;
-use rustler::Term;
 use std::error::Error as StdError;
 use std::sync::Mutex;
 
-/// Holds the model state which include onnxruntime session and environment. All
-/// are threadsafe so this can be called concurrently from the beam.
+/// Holds the model's ONNX Runtime session
 pub struct OrtexModel {
-    pub session: Mutex<ort::session::Session>,
+    pub session: Mutex<Session>,
 }
 impl Resource for OrtexModel {}
 
-// Since we're only using the session for inference and
-// inference is threadsafe, this Sync is safe. Additionally,
-// Environment is global and also threadsafe
-// https://github.com/microsoft/onnxruntime/issues/114
-unsafe impl Sync for OrtexModel {}
+/// Owns an ONNX Runtime output `Value` that was bound to CUDA device memory via
+/// IoBinding (see `run_cuda_pinned`), keeping its underlying device buffer alive
+/// for as long as Elixir holds a reference to this resource. 
+pub struct OrtexCudaOutput {
+    #[allow(dead_code)]
+    pub value: DynTensor,
+}
+// Safety: `value` only ever exposes a raw device pointer (via `data_ptr`) read
+// by native code on the CUDA-bound thread that consumes it.
+unsafe impl Send for OrtexCudaOutput {}
+unsafe impl Sync for OrtexCudaOutput {}
+impl Resource for OrtexCudaOutput {}
+// `ort::Value` holds a `Box<dyn Any>` internally (its optional backing store),
+// and auto traits don't propagate through an unconstrained trait object.
+impl std::panic::RefUnwindSafe for OrtexCudaOutput {}
 
-/// Creates a model given the path to the model and vector of execution providers.
+fn tensor_element_dtype(ty: TensorElementType) -> Result<(String, usize), Box<dyn StdError + Send + Sync>> {
+    match ty {
+        TensorElementType::Float32 => Ok(("f".to_string(), 32)),
+        TensorElementType::Float16 => Ok(("f".to_string(), 16)),
+        other => Err(format!("unsupported cuda output dtype: {other:?}").into()),
+    }
+}
+
 /// The execution providers are Atoms from Erlang/Elixir.
 pub fn init(
     model_path: String,
     eps: Vec<ExecutionProviderDispatch>,
     opt: i32,
 ) -> Result<OrtexModel, Error> {
-    // TODO: send tracing logs to erlang/elixir _somehow_
-    //tracing_subscriber::fmt::init();
-
     let session = Session::builder()?
         .with_optimization_level(map_opt_level(opt))?
         .with_execution_providers(eps)?
         .commit_from_file(model_path)?;
 
-    let state = OrtexModel {
-        session: session.into(),
-    };
-    Ok(state)
+    Ok(OrtexModel {
+        session: Mutex::new(session),
+    })
 }
 
-/// Returns input/output information about a model. The result is a Tuple of
-/// `inputs` and `outputs` with elements of `(Name, Type, Dimension)` where
-/// `Dimension` elements of -1 are dynamic.
 pub fn show(
     model: ResourceArc<OrtexModel>,
 ) -> (
     Vec<(String, String, Option<Vec<i64>>)>,
     Vec<(String, String, Option<Vec<i64>>)>,
 ) {
-    let session: &mut ort::session::Session = &mut model.session.lock().unwrap();
+    let session = model.session.lock().unwrap();
 
     let mut inputs = Vec::new();
-    for input in session.inputs.iter() {
-        let name = input.name.to_string();
-        let repr = format!("{:#?}", input.input_type);
-        let dims: Option<Vec<i64>> = input.input_type.tensor_shape().map(|s| s.to_vec());
+    for input in session.inputs() {
+        let name = input.name().to_string();
+        let repr = format!("{:#?}", input.dtype());
+        let dims: Option<Vec<i64>> = input.dtype().tensor_shape().map(|s| s.to_vec());
         inputs.push((name, repr, dims));
     }
 
     let mut outputs = Vec::new();
-    for output in session.outputs.iter() {
-        let name = output.name.to_string();
-        let repr = format!("{:#?}", output.output_type);
-        let dims: Option<Vec<i64>> = output.output_type.tensor_shape().map(|s| s.to_vec());
+    for output in session.outputs() {
+        let name = output.name().to_string();
+        let repr = format!("{:#?}", output.dtype());
+        let dims: Option<Vec<i64>> = output.dtype().tensor_shape().map(|s| s.to_vec());
         outputs.push((name, repr, dims));
     }
 
@@ -94,19 +93,19 @@ pub fn show(
 }
 
 /// Runs the model with the given inputs. Returns a vector of tensors. Use `model::show`
-/// to see what the model expects for input and output shapes.
 pub fn run(
     model: ResourceArc<OrtexModel>,
     inputs: Vec<ResourceArc<OrtexTensor>>,
-) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError>> {
-    let session: &mut ort::session::Session = &mut model.session.lock().unwrap();
+) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError + Send + Sync>>
+{
+    let mut session = model.session.lock().unwrap();
 
     // Bool-converted temporaries must outlive ortified_inputs since inputs borrow from them.
     let bool_converted: Vec<OrtexTensor> = inputs
         .iter()
-        .zip(&session.inputs)
+        .zip(session.inputs())
         .filter_map(|(elixir_input, onnx_input)| {
-            if is_bool_input(&onnx_input.input_type) {
+            if is_bool_input(onnx_input.dtype()) {
                 Some((&**elixir_input).clone().to_bool())
             } else {
                 None
@@ -117,8 +116,8 @@ pub fn run(
     let mut bool_iter = bool_converted.iter();
     let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
-    for (elixir_input, onnx_input) in inputs.iter().zip(&session.inputs) {
-        if is_bool_input(&onnx_input.input_type) {
+    for (elixir_input, onnx_input) in inputs.iter().zip(session.inputs()) {
+        if is_bool_input(onnx_input.dtype()) {
             let v: ort::session::SessionInputValue<'_> = bool_iter.next().unwrap().try_into()?;
             ortified_inputs.push(v);
         } else {
@@ -148,24 +147,20 @@ pub fn run(
     Ok(collected_outputs)
 }
 
-/// Like `run`, but takes raw BEAM binaries instead of OrtexTensor ResourceArcs.
-/// Creates zero-copy TensorRef views directly from BEAM binary pointers, avoiding
-/// the separate from_binary NIF call and the ndarray heap copy entirely.
 pub fn run_binary<'a>(
     model: ResourceArc<OrtexModel>,
     inputs: &[(Binary<'a>, Vec<usize>, String, usize)],
-) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError>> {
-    let session: &mut Session = &mut model.session.lock().unwrap();
+) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError + Send + Sync>>
+{
+    let mut session = model.session.lock().unwrap();
+    let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
-    let mut ortified_inputs: Vec<ort::session::SessionInputValue<'a>> = Vec::new();
-
-    for ((bin, shape, dtype_str, dtype_bits), onnx_input) in inputs.iter().zip(&session.inputs) {
+    for ((bin, shape, dtype_str, dtype_bits), onnx_input) in inputs.iter().zip(session.inputs()) {
         let n: usize = shape.iter().product();
         let ptr = bin.as_ptr();
 
-        if is_bool_input(&onnx_input.input_type) {
-            // Bool inputs require a type conversion; owned copy is unavoidable here.
-            let u8_slice = &bin.as_slice()[..n];
+        if is_bool_input(onnx_input.dtype()) {
+            let u8_slice = unsafe { std::slice::from_raw_parts(ptr, n) };
             let bool_vec: Vec<bool> = u8_slice.iter().map(|&x| x != 0).collect();
             let arr = Array::from_shape_vec(IxDyn(shape.as_slice()), bool_vec)?;
             ortified_inputs.push(ort::value::Value::from_array(arr)?.into());
@@ -174,16 +169,13 @@ pub fn run_binary<'a>(
 
         macro_rules! make_input {
             ($t:ty) => {{
-                // SAFETY: Binary<'a> is pinned by the BEAM for the duration of this NIF call.
-                // The slice, ArrayView, and TensorRef all borrow with lifetime 'a which is
-                // the NIF env lifetime, so they cannot outlive the binary data.
-                let slice: &'a [$t] = unsafe { std::slice::from_raw_parts(ptr as *const $t, n) };
+                let slice: &[$t] = unsafe { std::slice::from_raw_parts(ptr as *const $t, n) };
                 let arr = ArrayView::<$t, IxDyn>::from_shape(IxDyn(shape.as_slice()), slice)?;
                 TensorRef::<$t>::from_array_view(arr)?.into()
             }};
         }
 
-        let v: ort::session::SessionInputValue<'a> = match (dtype_str.as_ref(), *dtype_bits) {
+        let v: ort::session::SessionInputValue<'_> = match (dtype_str.as_ref(), *dtype_bits) {
             ("f", 32) => make_input!(f32),
             ("f", 64) => make_input!(f64),
             ("f", 16) => make_input!(half::f16),
@@ -215,28 +207,12 @@ pub fn run_binary<'a>(
     Ok(collected_outputs)
 }
 
-/// Like `run_binary`, but takes a raw CUDA device pointer (from
-/// `Torchx.data_ptr/1`) instead of a BEAM binary, for each input. Avoids the
-/// device->host->device round trip that `run`/`run_binary` incur when the
-/// input tensor is already GPU-resident (e.g. preprocessed via Torchx on
-/// `:cuda`): those paths always land the data in a host binary first, which
-/// onnxruntime then re-uploads to the GPU internally.
-///
-/// `inputs` is `(ptr, shape, dtype_str, dtype_bits, device_index)` per input,
-/// where `ptr` is a raw CUDA device pointer as returned by
-/// `Torchx.data_ptr/1`.
-///
-/// # Safety
-/// The caller (Elixir) must keep the tensor resource that `ptr` came from
-/// alive (unreleased/uncollected) for the duration of this call -- `ptr`
-/// itself carries no lifetime and this function has no way to verify it's
-/// still valid.
 pub fn run_cuda(
     model: ResourceArc<OrtexModel>,
     inputs: &[(u64, Vec<i64>, String, usize, i32)],
-) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError>> {
-    let session: &mut Session = &mut model.session.lock().unwrap();
-
+) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, Box<dyn StdError + Send + Sync>>
+{
+    let mut session = model.session.lock().unwrap();
     let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
     for (ptr, shape, dtype_str, dtype_bits, device_index) in inputs.iter() {
@@ -245,10 +221,6 @@ pub fn run_cuda(
 
         macro_rules! make_cuda_input {
             ($t:ty) => {{
-                // SAFETY: `data` must point to a live CUDA allocation for the
-                // duration of this call. The Elixir caller is responsible for
-                // keeping the backing Torchx tensor resource alive (see
-                // Ortex.run/2's dispatch to this function) across the call.
                 let tensor_ref: TensorRefMut<'_, $t> =
                     unsafe { TensorRefMut::from_raw(info.clone(), data, Shape::from(shape.clone()))? };
                 tensor_ref.into()
@@ -277,82 +249,91 @@ pub fn run_cuda(
     Ok(collected_outputs)
 }
 
-pub fn create_mask<'a>(
-    env: Env<'a>,
-    coefficients: Vec<f32>,
-    prototypes_bin: rustler::Binary,
-    proto_shape_term: Term<'a>, // Elixir tuple {batch, m, h, w} -> Vec<usize>
-    threshold: f32,
-) -> Result<Term<'a>, rustler::Error> {
-    // Decode as 4-element tuple directly
-    let (batch_size, m, height, width): (usize, usize, usize, usize) =
-        proto_shape_term.decode().map_err(|e| {
-            println!("Failed to decode tuple: {:?}", e);
-            rustler::Error::BadArg
-        })?;
+/// Same CUDA device-pointer inputs as `run_cuda`, but additionally pins each
+/// output named in `cuda_output_names` to CUDA device memory via IoBinding
+/// instead of letting ONNX Runtime copy it to the host.
+#[allow(clippy::too_many_arguments)]
+pub fn run_cuda_pinned(
+    model: ResourceArc<OrtexModel>,
+    inputs: &[(u64, Vec<i64>, String, usize, i32)],
+    cuda_output_names: &[String],
+    cuda_device_index: i32,
+) -> Result<
+    (
+        Vec<(String, ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>,
+        Vec<(String, u64, Vec<i64>, String, usize, i32, ResourceArc<OrtexCudaOutput>)>,
+    ),
+    Box<dyn StdError + Send + Sync>,
+> {
+    let mut session = model.session.lock().unwrap();
 
-    // Validate 4D
-    let expected_proto_size = batch_size * m * height * width;
-    let f32_size = std::mem::size_of::<f32>();
+    let mut binding = session.create_binding()?;
 
-    // Validate coefficients
-    if coefficients.len() != m {
-        println!(
-            "Invalid coefficients length: {}, expected: {}",
-            coefficients.len(),
-            m
-        );
-        return Err(rustler::Error::BadArg);
+    for ((ptr, shape, dtype_str, dtype_bits, device_index), onnx_input) in
+        inputs.iter().zip(session.inputs())
+    {
+        let info = MemoryInfo::new(AllocationDevice::CUDA, *device_index, AllocatorType::Device, MemoryType::Default)?;
+        let data = *ptr as usize as *mut ort_sys::c_void;
+
+        macro_rules! bind_cuda_input {
+            ($t:ty) => {{
+                let tensor_ref: TensorRefMut<'_, $t> =
+                    unsafe { TensorRefMut::from_raw(info.clone(), data, Shape::from(shape.clone()))? };
+                binding.bind_input(onnx_input.name(), &tensor_ref)?;
+            }};
+        }
+
+        match (dtype_str.as_ref(), *dtype_bits) {
+            ("f", 32) => bind_cuda_input!(f32),
+            ("f", 16) => bind_cuda_input!(half::f16),
+            _ => return Err(format!("unsupported cuda dtype ({}, {})", dtype_str, dtype_bits).into()),
+        };
     }
 
-    // Validate prototypes binary
-    let protos_bytes = prototypes_bin.as_slice();
-    if protos_bytes.len() != expected_proto_size * f32_size {
-        println!(
-            "Invalid prototypes binary size: {}, expected: {}",
-            protos_bytes.len(),
-            expected_proto_size * f32_size
-        );
-        return Err(rustler::Error::BadArg);
-    }
-    let protos_slice: &[f32] = unsafe {
-        std::slice::from_raw_parts(protos_bytes.as_ptr() as *const f32, expected_proto_size)
-    };
+    let cpu_info = MemoryInfo::new(AllocationDevice::CPU, 0, AllocatorType::Device, MemoryType::Default)?;
+    let cuda_out_info = MemoryInfo::new(AllocationDevice::CUDA, cuda_device_index, AllocatorType::Device, MemoryType::Default)?;
 
-    // Assume single batch
-    if batch_size != 1 {
-        println!("Batch size not 1: {}", batch_size);
-        return Err(rustler::Error::BadArg);
+    for output in session.outputs() {
+        if cuda_output_names.iter().any(|n| n == output.name()) {
+            binding.bind_output_to_device(output.name(), &cuda_out_info)?;
+        } else {
+            binding.bind_output_to_device(output.name(), &cpu_info)?;
+        }
     }
 
-    // Reshape to 3D view
-    let proto_3d =
-        ArrayView3::<f32>::from_shape((m, height, width), protos_slice).map_err(|e| {
-            println!("ArrayView3 error: {:?}", e);
-            rustler::Error::BadArg
-        })?;
+    let outputs = session.run_binding(&binding)?;
 
-    // Weighted sum
-    let mut output = Array2::<f32>::zeros((height, width));
-    for i in 0..m {
-        let proto_slice = proto_3d.slice(s![i, .., ..]);
-        let weighted = proto_slice.mapv(|x| x * coefficients[i]);
-        output += &weighted;
+    let mut host_outputs = Vec::new();
+    let mut cuda_outputs = Vec::new();
+
+    for (name, val) in outputs {
+        let name = name.to_string();
+
+        if cuda_output_names.iter().any(|n| n == &name) {
+            let dyn_tensor: DynTensor = val.downcast()?;
+            let ptr = dyn_tensor.data_ptr() as u64;
+            let ValueType::Tensor { ty, shape, .. } = dyn_tensor.dtype() else {
+                return Err(format!("output `{name}` bound to CUDA memory is not a tensor").into());
+            };
+            let (dtype_str, dtype_bits) = tensor_element_dtype(*ty)?;
+            let shape_vec: Vec<i64> = shape.iter().copied().collect();
+
+            cuda_outputs.push((
+                name,
+                ptr,
+                shape_vec,
+                dtype_str,
+                dtype_bits,
+                cuda_device_index,
+                ResourceArc::new(OrtexCudaOutput { value: dyn_tensor }),
+            ));
+        } else {
+            let ortextensor: OrtexTensor = (&val).try_into()?;
+            let shape = ortextensor.shape();
+            let (dtype, bits) = ortextensor.dtype();
+            host_outputs.push((name, ResourceArc::new(ortextensor), shape, dtype, bits));
+        }
     }
 
-    // Sigmoid and threshold
-    let sigmoid = output.mapv(|x| 1.0 / (1.0 + (-x).exp()));
-    let binary = sigmoid.mapv(|x| if x >= threshold { 255u8 } else { 0u8 });
-    let binary_vec = binary
-        .to_shape(height * width)
-        .map_err(|e| {
-            println!("Flatten error: {:?}", e);
-            rustler::Error::BadArg
-        })?
-        .to_vec();
-
-    // Return binary
-    let mut new_bin = NewBinary::new(env, binary_vec.len());
-    new_bin.as_mut_slice().copy_from_slice(&binary_vec);
-    Ok(new_bin.into())
+    Ok((host_outputs, cuda_outputs))
 }

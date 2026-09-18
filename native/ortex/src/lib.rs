@@ -1,16 +1,15 @@
 //! # Ortex
 //! Rust bindings between [ONNX Runtime](https://github.com/microsoft/onnxruntime) and
 //! Erlang/Elixir using [Ort](https://docs.rs/ort) and [Rustler](https://docs.rs/rustler).
-//! These are only meant to be accessed via the NIF interface provided by Rustler and not
-//! directly.
+//! These are only meant to be accessed via the NIF interface provided by Rustler and not directly.
 
 mod constants;
-mod image;
 mod model;
 mod tensor;
 mod utils;
 
 use model::OrtexModel;
+use rustler::Resource;
 use tensor::OrtexTensor;
 
 use rustler::types::Binary;
@@ -28,6 +27,10 @@ fn init(
     let model = model::init(model_path, eps, opt)
         .map_err(|e| rustler::Error::Term(Box::new(e.to_string())))?;
     Ok(ResourceArc::new(model))
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn unload(_model: ResourceArc<model::OrtexModel>) {
 }
 
 #[rustler::nif]
@@ -64,6 +67,21 @@ fn run_cuda(
     inputs: Vec<(u64, Vec<i64>, String, usize, i32)>,
 ) -> NifResult<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>> {
     model::run_cuda(model, &inputs).map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+#[allow(clippy::type_complexity)]
+fn run_cuda_pinned(
+    model: ResourceArc<model::OrtexModel>,
+    inputs: Vec<(u64, Vec<i64>, String, usize, i32)>,
+    cuda_output_names: Vec<String>,
+    cuda_device_index: i32,
+) -> NifResult<(
+    Vec<(String, ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>,
+    Vec<(String, u64, Vec<i64>, String, usize, i32, ResourceArc<model::OrtexCudaOutput>)>,
+)> {
+    model::run_cuda_pinned(model, &inputs, &cuda_output_names, cuda_device_index)
+        .map_err(|e| rustler::Error::Term(Box::new(e.to_string())))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -111,48 +129,6 @@ pub fn reshape<'a>(
     Ok(ResourceArc::new(tensor.reshape(shape)?))
 }
 
-#[rustler::nif(schedule = "DirtyCpu")]
-pub fn prepare_image<'a>(
-    env: Env<'a>,
-    bin: Binary,
-    width: u32,
-    height: u32,
-    size: u32,
-) -> NifResult<Term<'a>> {
-    image::prepare_image(env, bin, width, height, size)
-}
-
-#[rustler::nif(schedule = "DirtyCpu")]
-pub fn prepare_resized_image<'a>(
-    env: Env<'a>,
-    bin: Binary,
-    scaled_width: u32,
-    scaled_height: u32,
-    canvas_size: u32,
-    pad_x: u32,
-    pad_y: u32,
-    pad_value: u8,
-) -> NifResult<Term<'a>> {
-    image::prepare_resized_image(env, bin, scaled_width, scaled_height, canvas_size, pad_x, pad_y, pad_value)
-}
-
-#[rustler::nif]
-pub fn create_mask<'a>(
-    env: Env<'a>,
-    coefficients: Vec<f32>,
-    prototypes_bin: rustler::Binary,
-    proto_shape_term: Term<'a>, // Elixir tuple {batch, m, h, w} -> Vec<usize>
-    threshold: f32,
-) -> Result<Term<'a>, rustler::Error> {
-    model::create_mask(
-        env,
-        coefficients,
-        prototypes_bin,
-        proto_shape_term,
-        threshold,
-    )
-}
-
 #[rustler::nif]
 pub fn concatenate<'a>(
     tensors: Vec<ResourceArc<OrtexTensor>>,
@@ -167,7 +143,15 @@ pub fn concatenate<'a>(
 
 pub fn on_load(env: Env) -> bool {
     tracing_subscriber::fmt::init();
-    env.register::<OrtexModel>().is_ok() && env.register::<OrtexTensor>().is_ok()
+
+    // create the global ort env
+    if !ort::init().commit() {
+        eprintln!("ortex: ort environment was already configured; init() had no effect");
+    }
+
+    env.register::<OrtexModel>().is_ok()
+        && env.register::<OrtexTensor>().is_ok()
+        && env.register::<model::OrtexCudaOutput>().is_ok()
 }
 
 rustler::init!(

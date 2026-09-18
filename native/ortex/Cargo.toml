@@ -14,21 +14,19 @@ resolver = "2"
 
 [dependencies]
 half = "2.7.1"
-image = "0.25"
-ndarray = "0.16.1"
+ndarray = "0.17"
 num-traits = "0.2.19"
-ort = {version = "2.0.0-rc.10", features = [
-  "half",
-  "cuda",
-  # "directml",
-  "tensorrt", 
-  # "coreml",
-]}
-ort-sys = {version = "=2.0.0-rc.10", default-features = false}
+ort-sys = {version = "=2.0.0-rc.13", default-features = false}
 rustler = "0.37"
 rustls = "0.23.34"
 tracing-subscriber = {version = "0.3", features = ["env-filter", "fmt"]}
-wide = "0.8.1"
+
+# DirectML doesn't exist outside Windows
+[target.'cfg(windows)'.dependencies]
+ort = {version = "2.0.0-rc.13", features = ["half", "cuda", "directml", "tensorrt"]}
+
+[target.'cfg(not(windows))'.dependencies]
+ort = {version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "half", "cuda", "tensorrt", "load-dynamic", "api-23"]}
 
 # [profile.dev]
 # debug = true # Enables full DWARF/PDB symbols (default on most platforms)
@@ -38,7 +36,10 @@ opt-level = 3
 
 [features]
 # ONNXRuntime Execution providers
-# coreml = ["ort/coreml"]
-# directml = ["ort/directml"]
+coreml = ["ort/coreml"]
+directml = ["ort/directml"]
 cuda = ["ort/cuda"]
 tensorrt = ["ort/tensorrt"]
+acl = ["ort/acl"]
+onednn = ["ort/onednn"]
+rocm = ["ort/rocm"]
