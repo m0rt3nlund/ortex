@@ -25,11 +25,6 @@ tracing-subscriber = {version = "0.3", features = ["env-filter", "fmt"]}
 [target.'cfg(windows)'.dependencies]
 ort = {version = "2.0.0-rc.13", features = ["half", "cuda", "directml", "tensorrt"]}
 
-# default-features = false + explicit api-23: ort's own defaults require a
-# newer ONNX Runtime than the one actually installed (pip onnxruntime
-# 1.23.0 on Jetson/Linux) for load-dynamic, which ort rejects outright
-# (BadVersion) rather than just warning. api-23 matches what's actually
-# there; bump this (never past what's installed) if that wheel is upgraded.
 [target.'cfg(not(windows))'.dependencies]
 ort = {version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "half", "cuda", "tensorrt", "load-dynamic", "api-23"]}
 
