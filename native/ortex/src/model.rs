@@ -9,7 +9,7 @@ use std::convert::TryInto;
 use ort::execution_providers::ExecutionProviderDispatch;
 use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
 use ort::session::Session;
-use ort::tensor::{Shape, TensorElementType};
+use ort::value::{Shape, TensorElementType};
 use ort::value::{DynTensor, TensorRef, TensorRefMut, ValueType};
 use ort::Error;
 use rustler::types::Binary;
@@ -74,18 +74,18 @@ pub fn show(
     let session = model.session.lock().unwrap();
 
     let mut inputs = Vec::new();
-    for input in session.inputs.iter() {
-        let name = input.name.to_string();
-        let repr = format!("{:#?}", input.input_type);
-        let dims: Option<Vec<i64>> = input.input_type.tensor_shape().map(|s| s.to_vec());
+    for input in session.inputs() {
+        let name = input.name().to_string();
+        let repr = format!("{:#?}", input.dtype());
+        let dims: Option<Vec<i64>> = input.dtype().tensor_shape().map(|s| s.to_vec());
         inputs.push((name, repr, dims));
     }
 
     let mut outputs = Vec::new();
-    for output in session.outputs.iter() {
-        let name = output.name.to_string();
-        let repr = format!("{:#?}", output.output_type);
-        let dims: Option<Vec<i64>> = output.output_type.tensor_shape().map(|s| s.to_vec());
+    for output in session.outputs() {
+        let name = output.name().to_string();
+        let repr = format!("{:#?}", output.dtype());
+        let dims: Option<Vec<i64>> = output.dtype().tensor_shape().map(|s| s.to_vec());
         outputs.push((name, repr, dims));
     }
 
@@ -103,9 +103,9 @@ pub fn run(
     // Bool-converted temporaries must outlive ortified_inputs since inputs borrow from them.
     let bool_converted: Vec<OrtexTensor> = inputs
         .iter()
-        .zip(&session.inputs)
+        .zip(session.inputs())
         .filter_map(|(elixir_input, onnx_input)| {
-            if is_bool_input(&onnx_input.input_type) {
+            if is_bool_input(onnx_input.dtype()) {
                 Some((&**elixir_input).clone().to_bool())
             } else {
                 None
@@ -116,8 +116,8 @@ pub fn run(
     let mut bool_iter = bool_converted.iter();
     let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
-    for (elixir_input, onnx_input) in inputs.iter().zip(&session.inputs) {
-        if is_bool_input(&onnx_input.input_type) {
+    for (elixir_input, onnx_input) in inputs.iter().zip(session.inputs()) {
+        if is_bool_input(onnx_input.dtype()) {
             let v: ort::session::SessionInputValue<'_> = bool_iter.next().unwrap().try_into()?;
             ortified_inputs.push(v);
         } else {
@@ -155,11 +155,11 @@ pub fn run_binary<'a>(
     let mut session = model.session.lock().unwrap();
     let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
-    for ((bin, shape, dtype_str, dtype_bits), onnx_input) in inputs.iter().zip(&session.inputs) {
+    for ((bin, shape, dtype_str, dtype_bits), onnx_input) in inputs.iter().zip(session.inputs()) {
         let n: usize = shape.iter().product();
         let ptr = bin.as_ptr();
 
-        if is_bool_input(&onnx_input.input_type) {
+        if is_bool_input(onnx_input.dtype()) {
             let u8_slice = unsafe { std::slice::from_raw_parts(ptr, n) };
             let bool_vec: Vec<bool> = u8_slice.iter().map(|&x| x != 0).collect();
             let arr = Array::from_shape_vec(IxDyn(shape.as_slice()), bool_vec)?;
@@ -270,7 +270,7 @@ pub fn run_cuda_pinned(
     let mut binding = session.create_binding()?;
 
     for ((ptr, shape, dtype_str, dtype_bits, device_index), onnx_input) in
-        inputs.iter().zip(&session.inputs)
+        inputs.iter().zip(session.inputs())
     {
         let info = MemoryInfo::new(AllocationDevice::CUDA, *device_index, AllocatorType::Device, MemoryType::Default)?;
         let data = *ptr as usize as *mut ort_sys::c_void;
@@ -279,7 +279,7 @@ pub fn run_cuda_pinned(
             ($t:ty) => {{
                 let tensor_ref: TensorRefMut<'_, $t> =
                     unsafe { TensorRefMut::from_raw(info.clone(), data, Shape::from(shape.clone()))? };
-                binding.bind_input(onnx_input.name.clone(), &tensor_ref)?;
+                binding.bind_input(onnx_input.name(), &tensor_ref)?;
             }};
         }
 
@@ -293,11 +293,11 @@ pub fn run_cuda_pinned(
     let cpu_info = MemoryInfo::new(AllocationDevice::CPU, 0, AllocatorType::Device, MemoryType::Default)?;
     let cuda_out_info = MemoryInfo::new(AllocationDevice::CUDA, cuda_device_index, AllocatorType::Device, MemoryType::Default)?;
 
-    for output in session.outputs.iter() {
-        if cuda_output_names.iter().any(|n| n == &output.name) {
-            binding.bind_output_to_device(output.name.clone(), &cuda_out_info)?;
+    for output in session.outputs() {
+        if cuda_output_names.iter().any(|n| n == output.name()) {
+            binding.bind_output_to_device(output.name(), &cuda_out_info)?;
         } else {
-            binding.bind_output_to_device(output.name.clone(), &cpu_info)?;
+            binding.bind_output_to_device(output.name(), &cpu_info)?;
         }
     }
 

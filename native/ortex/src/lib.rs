@@ -145,8 +145,8 @@ pub fn on_load(env: Env) -> bool {
     tracing_subscriber::fmt::init();
 
     // create the global ort env
-    if let Err(e) = ort::init().commit() {
-        eprintln!("ortex: failed to initialize ort environment: {e}");
+    if !ort::init().commit() {
+        eprintln!("ortex: ort environment was already configured; init() had no effect");
     }
 
     env.register::<OrtexModel>().is_ok()
