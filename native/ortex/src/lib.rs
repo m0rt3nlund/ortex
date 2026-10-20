@@ -141,8 +141,35 @@ pub fn concatenate<'a>(
     Ok(ResourceArc::new(concatted))
 }
 
+// cuDNN loads nvrtc on demand and unloads it again, but nvrtc registers a
+// console Ctrl handler (SetConsoleCtrlHandler) that is never removed. The next
+// Ctrl-C then makes Windows call into unmapped code and the VM crashes with an
+// access violation. Keeping nvrtc resident for the lifetime of the process
+// keeps the handler valid. Missing DLLs are ignored (CPU-only machines).
+#[cfg(all(windows, any(feature = "cuda", feature = "tensorrt")))]
+fn pin_nvrtc() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut std::ffi::c_void;
+    }
+
+    for dll in ["nvrtc64_120_0.dll", "nvrtc64_130_0.dll"] {
+        let name: Vec<u16> = OsStr::new(dll).encode_wide().chain(Some(0)).collect();
+        // The handle is intentionally never freed.
+        unsafe { LoadLibraryW(name.as_ptr()) };
+    }
+}
+
+#[cfg(not(all(windows, any(feature = "cuda", feature = "tensorrt"))))]
+fn pin_nvrtc() {}
+
 pub fn on_load(env: Env) -> bool {
     tracing_subscriber::fmt::init();
+
+    pin_nvrtc();
 
     // create the global ort env
     if !ort::init().commit() {
