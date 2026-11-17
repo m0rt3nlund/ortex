@@ -108,17 +108,104 @@ impl OrtexModel {
     }
 }
 
+/// One CUDA memory pool for every session that asks for it (the CUDA provider's `shared_arena` option), instead of a
+/// pool per session: memory one model gives back can be used by another. For trying a GPU with little memory, it is
+/// off unless asked for. The pool is ONNX Runtime's environment's, so it is only given back when the application
+/// stops, and the per-session `gpu_mem_limit` and `arena_extend_strategy` do not apply to it: it grows by what is
+/// asked for (kSameAsRequested), up to `shared_arena_max_mem` bytes (0, the default, has no limit).
+pub struct SharedArena {
+    pub device_id: i32,
+    pub max_mem: usize,
+}
+
+impl SharedArena {
+    /// From the CUDA provider's options, when `shared_arena` is `true`
+    pub fn from_options(options: &[(String, String)]) -> Option<SharedArena> {
+        let value = |key: &str| options.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        if value("shared_arena") != Some("true") {
+            return None;
+        }
+        Some(SharedArena {
+            device_id: value("device_id").and_then(|v| v.parse().ok()).unwrap_or(0),
+            max_mem: value("shared_arena_max_mem").and_then(|v| v.parse().ok()).unwrap_or(0),
+        })
+    }
+}
+
+/// The devices whose shared pool is registered, once each; the first session's `max_mem` is the one that counts
+static SHARED_ARENAS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+fn register_shared_arena(arena: &SharedArena) -> Result<(), BoxError> {
+    use ort::AsPointer;
+
+    let mut registered = SHARED_ARENAS.lock().map_err(|_| "the shared CUDA pool's lock is poisoned")?;
+    if registered.contains(&arena.device_id) {
+        return Ok(());
+    }
+
+    let environment = ort::environment::Environment::current()?;
+    let memory_info = MemoryInfo::new(AllocationDevice::CUDA, arena.device_id, AllocatorType::Arena, MemoryType::Default)?;
+    let api = ort::api();
+
+    // arena_extend_strategy 1 is kSameAsRequested
+    let keys = [c"arena_extend_strategy".as_ptr(), c"max_mem".as_ptr()];
+    let values: [usize; 2] = [1, arena.max_mem];
+    let mut arena_cfg: *mut ort_sys::OrtArenaCfg = std::ptr::null_mut();
+    check_status(unsafe { (api.CreateArenaCfgV2)(keys.as_ptr(), values.as_ptr(), keys.len(), &mut arena_cfg) })?;
+
+    let device_id = std::ffi::CString::new(arena.device_id.to_string())?;
+    let option_keys = [c"device_id".as_ptr()];
+    let option_values = [device_id.as_ptr()];
+    let status = unsafe {
+        (api.CreateAndRegisterAllocatorV2)(
+            environment.ptr().cast_mut(),
+            c"CUDAExecutionProvider".as_ptr(),
+            memory_info.ptr(),
+            arena_cfg,
+            option_keys.as_ptr(),
+            option_values.as_ptr(),
+            option_keys.len(),
+        )
+    };
+    unsafe { (api.ReleaseArenaCfg)(arena_cfg) };
+    check_status(status)?;
+
+    registered.push(arena.device_id);
+    Ok(())
+}
+
+fn check_status(status: ort_sys::OrtStatusPtr) -> Result<(), BoxError> {
+    if status.0.is_null() {
+        return Ok(());
+    }
+    let api = ort::api();
+    let message = unsafe { std::ffi::CStr::from_ptr((api.GetErrorMessage)(status.0)) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { (api.ReleaseStatus)(status.0) };
+    Err(message.into())
+}
+
 /// Makes the session on a thread of its own, which then runs what `OrtexModel::with_session` gives it until the model
 /// is dropped (its queue closes), and drops the session.
 /// The execution providers are Atoms from Erlang/Elixir.
-pub fn init(model_path: String, eps: Vec<ExecutionProviderDispatch>, opt: i32) -> Result<OrtexModel, BoxError> {
+pub fn init(
+    model_path: String,
+    eps: Vec<ExecutionProviderDispatch>,
+    opt: i32,
+    shared_arena: Option<SharedArena>,
+) -> Result<OrtexModel, BoxError> {
     let (jobs, queue) = mpsc::channel::<Job>();
     let (ready, started) = mpsc::sync_channel::<Result<(Signature, Signature), String>>(1);
-    let build = AssertSend(move || -> Result<Session, ort::Error> {
-        Session::builder()?
+    let build = AssertSend(move || -> Result<Session, BoxError> {
+        let mut builder = Session::builder()?
             .with_optimization_level(map_opt_level(opt))?
-            .with_execution_providers(eps)?
-            .commit_from_file(model_path)
+            .with_execution_providers(eps)?;
+        if let Some(arena) = &shared_arena {
+            register_shared_arena(arena)?;
+            builder = builder.with_env_allocators()?;
+        }
+        Ok(builder.commit_from_file(model_path)?)
     });
 
     std::thread::Builder::new()

@@ -23,8 +23,13 @@ fn init(
     eps: Vec<(Atom, Vec<(String, String)>)>,
     opt: i32,
 ) -> NifResult<ResourceArc<model::OrtexModel>> {
+    // The CUDA provider's `shared_arena` option, see model::SharedArena
+    let shared_arena = eps
+        .iter()
+        .filter(|(ep, _)| ep.to_term(env).atom_to_string().map(|name| name == constants::CUDA).unwrap_or(false))
+        .find_map(|(_, options)| model::SharedArena::from_options(options));
     let eps = utils::map_eps(env, eps);
-    let model = model::init(model_path, eps, opt)
+    let model = model::init(model_path, eps, opt, shared_arena)
         .map_err(|e| rustler::Error::Term(Box::new(e.to_string())))?;
     Ok(ResourceArc::new(model))
 }
