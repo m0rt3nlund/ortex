@@ -23,8 +23,13 @@ fn init(
     eps: Vec<(Atom, Vec<(String, String)>)>,
     opt: i32,
 ) -> NifResult<ResourceArc<model::OrtexModel>> {
+    // The CUDA provider's `shared_arena` option, see model::SharedArena
+    let shared_arena = eps
+        .iter()
+        .filter(|(ep, _)| ep.to_term(env).atom_to_string().map(|name| name == constants::CUDA).unwrap_or(false))
+        .find_map(|(_, options)| model::SharedArena::from_options(options));
     let eps = utils::map_eps(env, eps);
-    let model = model::init(model_path, eps, opt)
+    let model = model::init(model_path, eps, opt, shared_arena)
         .map_err(|e| rustler::Error::Term(Box::new(e.to_string())))?;
     Ok(ResourceArc::new(model))
 }
@@ -141,12 +146,39 @@ pub fn concatenate<'a>(
     Ok(ResourceArc::new(concatted))
 }
 
+// cuDNN loads nvrtc on demand and unloads it again, but nvrtc registers a
+// console Ctrl handler (SetConsoleCtrlHandler) that is never removed. The next
+// Ctrl-C then makes Windows call into unmapped code and the VM crashes with an
+// access violation. Keeping nvrtc resident for the lifetime of the process
+// keeps the handler valid. Missing DLLs are ignored (CPU-only machines).
+#[cfg(all(windows, any(feature = "cuda", feature = "tensorrt")))]
+fn pin_nvrtc() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut std::ffi::c_void;
+    }
+
+    for dll in ["nvrtc64_120_0.dll", "nvrtc64_130_0.dll"] {
+        let name: Vec<u16> = OsStr::new(dll).encode_wide().chain(Some(0)).collect();
+        // The handle is intentionally never freed.
+        unsafe { LoadLibraryW(name.as_ptr()) };
+    }
+}
+
+#[cfg(not(all(windows, any(feature = "cuda", feature = "tensorrt"))))]
+fn pin_nvrtc() {}
+
 pub fn on_load(env: Env) -> bool {
     tracing_subscriber::fmt::init();
 
-    // create the global ort env
-    if !ort::init().commit() {
-        eprintln!("ortex: ort environment was already configured; init() had no effect");
+    pin_nvrtc();
+
+    // ONNX Runtime's environment (one per process), every session is made with it
+    if let Err(error) = model::environment() {
+        eprintln!("ortex: {error}");
     }
 
     env.register::<OrtexModel>().is_ok()

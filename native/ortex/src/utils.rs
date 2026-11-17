@@ -11,8 +11,8 @@ use rustler::types::Binary;
 use rustler::ResourceArc;
 use rustler::{Atom, Env, NifResult};
 
-use ort::execution_providers::cuda::ConvAlgorithmSearch;
-use ort::execution_providers::{ArenaExtendStrategy, ExecutionProviderDispatch};
+use ort::ep::cuda::ConvAlgorithmSearch;
+use ort::ep::{ArenaExtendStrategy, ExecutionProviderDispatch};
 use ort::session::builder::GraphOptimizationLevel;
 
 /// A faster (unsafe) way of creating an Array from an Erlang binary
@@ -89,7 +89,7 @@ pub fn map_eps(
     eps.into_iter()
         .map(
             |(e, opts)| match &e.to_term(env).atom_to_string().unwrap()[..] {
-                CPU => ort::execution_providers::cpu::CPU::default().build(),
+                CPU => ort::ep::cpu::CPU::default().build(),
                 CUDA => {
                     let mut device_id: i32 = 0;
                     let mut memory_limit: Option<usize> = None;
@@ -120,7 +120,7 @@ pub fn map_eps(
                         }
                     }
                     let mut ep =
-                        ort::execution_providers::cuda::CUDA::default().with_device_id(device_id);
+                        ort::ep::cuda::CUDA::default().with_device_id(device_id);
                     if let Some(limit) = memory_limit {
                         ep = ep.with_memory_limit(limit);
                     }
@@ -154,7 +154,7 @@ pub fn map_eps(
                         }
                     }
                     let ep =
-                        ort::execution_providers::tensorrt::TensorRT::default()
+                        ort::ep::tensorrt::TensorRT::default()
                             .with_max_workspace_size(workspace_size)
                             .with_engine_cache(engine_cache)
                             .with_fp16(fp16)
@@ -167,20 +167,19 @@ pub fn map_eps(
                     ep.build().error_on_failure()
                 }
                 #[cfg(feature = "acl")]
-                ACL => ort::execution_providers::acl::ACL::default().build(),
+                ACL => ort::ep::acl::ACL::default().build(),
                 #[cfg(feature = "onednn")]
-                ONEDNN => ort::execution_providers::onednn::OneDNN::default().build(),
+                ONEDNN => ort::ep::onednn::OneDNN::default().build(),
                 #[cfg(feature = "coreml")]
-                COREML => ort::execution_providers::coreml::CoreML::default().build(),
-                #[cfg(windows)]
+                COREML => ort::ep::coreml::CoreML::default().build(),
                 DIRECTML => {
-                    ort::execution_providers::directml::DirectML::default()
+                    ort::ep::directml::DirectML::default()
                         .build()
                         .error_on_failure()
                 }
                 #[cfg(feature = "rocm")]
-                ROCM => ort::execution_providers::rocm::ROCm::default().build(),
-                _ => ort::execution_providers::cpu::CPU::default().build(),
+                ROCM => ort::ep::rocm::ROCm::default().build(),
+                _ => ort::ep::cpu::CPU::default().build(),
             },
         )
         .collect()
