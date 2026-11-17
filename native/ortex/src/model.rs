@@ -6,7 +6,7 @@ use crate::utils::{is_bool_input, map_opt_level};
 use ndarray::{Array, ArrayView, IxDyn};
 use std::convert::TryInto;
 
-use ort::execution_providers::ExecutionProviderDispatch;
+use ort::ep::ExecutionProviderDispatch;
 use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
 use ort::session::Session;
 use ort::value::{Shape, TensorElementType};
@@ -19,6 +19,7 @@ use std::error::Error as StdError;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 type BoxError = Box<dyn StdError + Send + Sync>;
 
@@ -132,6 +133,17 @@ impl SharedArena {
     }
 }
 
+/// ONNX Runtime's environment, one per process (ort allows no more): every session is made with it
+static ENVIRONMENT: OnceLock<Result<ort::environment::Environment, String>> = OnceLock::new();
+
+/// Makes the environment, when the NIF is loaded (`on_load`), or else the first time it is needed
+pub fn environment() -> Result<&'static ort::environment::Environment, BoxError> {
+    match ENVIRONMENT.get_or_init(|| ort::init().build().map_err(|e| e.to_string())) {
+        Ok(environment) => Ok(environment),
+        Err(message) => Err(format!("no ONNX Runtime environment: {message}").into()),
+    }
+}
+
 /// The devices whose shared pool is registered, once each; the first session's `max_mem` is the one that counts
 static SHARED_ARENAS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
 
@@ -143,7 +155,7 @@ fn register_shared_arena(arena: &SharedArena) -> Result<(), BoxError> {
         return Ok(());
     }
 
-    let environment = ort::environment::Environment::current()?;
+    let environment = environment()?;
     let memory_info = MemoryInfo::new(AllocationDevice::CUDA, arena.device_id, AllocatorType::Arena, MemoryType::Default)?;
     let api = ort::api();
 
@@ -198,7 +210,7 @@ pub fn init(
     let (jobs, queue) = mpsc::channel::<Job>();
     let (ready, started) = mpsc::sync_channel::<Result<(Signature, Signature), String>>(1);
     let build = AssertSend(move || -> Result<Session, BoxError> {
-        let mut builder = Session::builder()?
+        let mut builder = Session::builder(environment()?)?
             .with_optimization_level(map_opt_level(opt))?
             .with_execution_providers(eps)?;
         if let Some(arena) = &shared_arena {

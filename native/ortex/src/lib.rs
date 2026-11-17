@@ -176,9 +176,9 @@ pub fn on_load(env: Env) -> bool {
 
     pin_nvrtc();
 
-    // create the global ort env
-    if !ort::init().commit() {
-        eprintln!("ortex: ort environment was already configured; init() had no effect");
+    // ONNX Runtime's environment (one per process), every session is made with it
+    if let Err(error) = model::environment() {
+        eprintln!("ortex: {error}");
     }
 
     env.register::<OrtexModel>().is_ok()

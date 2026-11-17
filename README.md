@@ -62,3 +62,24 @@ end
 ```
 
 You will need [Rust](https://www.rust-lang.org/tools/install) for compilation to succeed.
+
+## Threads and GPU memory (this fork)
+
+Each model's session lives on a thread of its own: it is made, run and dropped there, and `run`, `run_binary`,
+`run_cuda` and `run_cuda_pinned` hand their work to that thread and wait for it. The CUDA execution provider sets up
+cuBLAS and cuDNN handles, with their workspaces on the GPU, for every thread that runs a session, so a session that
+was run from any of the BEAM's dirty schedulers had a set for each of them.
+
+### A shared CUDA memory pool
+
+By default every session has its own CUDA memory pool (BFC arena). With the CUDA provider option `shared_arena`, the
+sessions that set it share one pool per GPU, registered on ONNX Runtime's environment
+(`CreateAndRegisterAllocatorV2`) and used through `session.use_env_allocators`:
+
+```elixir
+Ortex.load("model.onnx", [{:cuda, [shared_arena: true, shared_arena_max_mem: 3_000_000_000]}])
+```
+
+The pool grows by what is asked for (`kSameAsRequested`) up to `shared_arena_max_mem` bytes (0 or none: no limit),
+the first session that registers it on a GPU decides that. It belongs to the environment, so it is only given back
+when the process ends, and the per-session `gpu_mem_limit` and `arena_extend_strategy` do not apply to it.
