@@ -186,10 +186,10 @@ impl OrtexTensor {
         }
     }
 
-    pub fn to_bool(self) -> OrtexTensor {
+    pub fn to_bool(&self) -> OrtexTensor {
         match self {
             OrtexTensor::u8(y) => {
-                let bool_tensor = y.to_owned().mapv(|x| match x {
+                let bool_tensor = y.mapv(|x| match x {
                     0 => false,
                     1 => true,
                     _ => {
@@ -224,11 +224,8 @@ fn get_bytes<'a, T>(array: &'a ArrayBase<T, IxDyn>) -> &'a [u8]
 where
     T: Data,
 {
-    let len = array.len();
-    let binding = unsafe { std::mem::zeroed() };
-    let f = array.get(0).unwrap_or(&binding);
-    let size: usize = std::mem::size_of_val(f);
-    unsafe { std::slice::from_raw_parts(array.as_ptr() as *const u8, len * size) }
+    let size = array.len() * std::mem::size_of::<T::Elem>();
+    unsafe { std::slice::from_raw_parts(array.as_ptr() as *const u8, size) }
 }
 
 impl TryFrom<&Value> for OrtexTensor {
@@ -425,14 +422,16 @@ macro_rules! concatenate {
         // have the desired type
         let tensors: Vec<ArrayType> = $tensors
             .iter()
-            .filter_map(|tensor| filter(tensor))
-            .collect();
+            .map(|tensor| filter(tensor))
+            .collect::<Option<_>>()
+            .ok_or("can't concatenate tensors of different types")?;
 
-        let tensors = ndarray::concatenate(Axis($axis), &tensors).unwrap();
+        let tensors = ndarray::concatenate(Axis($axis), &tensors).map_err(|e| e.to_string())?;
         // data is not contiguous after the concatenation above. To decode
         // properly, need to create a new contiguous vector
         let tensors =
-            Array::from_shape_vec(tensors.raw_dim(), tensors.iter().cloned().collect()).unwrap();
+            Array::from_shape_vec(tensors.raw_dim(), tensors.iter().cloned().collect())
+                .map_err(|e| e.to_string())?;
         OrtexTensor::$ort_tensor_kind(tensors)
     }};
 }
@@ -441,8 +440,8 @@ pub fn concatenate(
     tensors: Vec<ResourceArc<OrtexTensor>>,
     dtype: (&str, usize),
     axis: usize,
-) -> OrtexTensor {
-    match dtype {
+) -> Result<OrtexTensor, String> {
+    Ok(match dtype {
         ("s", 8) => concatenate!(tensors, axis, i8, s8),
         ("s", 16) => concatenate!(tensors, axis, i16, s16),
         ("s", 32) => concatenate!(tensors, axis, i32, s32),
@@ -455,6 +454,6 @@ pub fn concatenate(
         ("bf", 16) => concatenate!(tensors, axis, half::bf16, bf16),
         ("f", 32) => concatenate!(tensors, axis, f32, f32),
         ("f", 64) => concatenate!(tensors, axis, f64, f64),
-        _ => unimplemented!(),
-    }
+        (dtype, bits) => return Err(format!("unsupported dtype ({}, {})", dtype, bits)),
+    })
 }

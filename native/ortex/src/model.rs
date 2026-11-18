@@ -2,8 +2,8 @@
 //!  which can be safely passed to and from the BEAM.
 
 use crate::tensor::OrtexTensor;
-use crate::utils::{is_bool_input, map_opt_level};
-use ndarray::{Array, ArrayView, IxDyn};
+use crate::utils::{copy_from_binary, is_bool_input, map_opt_level};
+use ndarray::{ArrayView, IxDyn};
 use std::convert::TryInto;
 
 use ort::ep::ExecutionProviderDispatch;
@@ -67,6 +67,24 @@ impl<T> AssertSend<T> {
     fn into_inner(self) -> T {
         self.0
     }
+}
+
+/// More inputs than the model takes would be dropped without a word (they are matched to the model's in order)
+fn check_input_count(session: &Session, given: usize) -> Result<(), BoxError> {
+    let expected = session.inputs().len();
+    if given > expected {
+        return Err(format!("the model takes {expected} inputs, but {given} were given").into());
+    }
+    Ok(())
+}
+
+/// The outputs as `OrtexTensor`s, copied to the host, in the session's output order
+fn collect_outputs(outputs: &ort::session::SessionOutputs<'_>) -> Result<Vec<OrtexTensor>, BoxError> {
+    let mut collected = Vec::with_capacity(outputs.len());
+    for value in outputs.values() {
+        collected.push((&*value).try_into()?);
+    }
+    Ok(collected)
 }
 
 fn tensor_element_dtype(ty: TensorElementType) -> Result<(String, usize), BoxError> {
@@ -210,12 +228,16 @@ pub fn init(
     let (jobs, queue) = mpsc::channel::<Job>();
     let (ready, started) = mpsc::sync_channel::<Result<(Signature, Signature), String>>(1);
     let build = AssertSend(move || -> Result<Session, BoxError> {
+        // Since ort rc.15 the builder methods return `ort::Error<SessionBuilder>`, which carries the builder (for
+        // recovery) and so is not Send/Sync; `ort::Error::from` drops it so `?` can box the error.
         let mut builder = Session::builder(environment()?)?
-            .with_optimization_level(map_opt_level(opt))?
-            .with_execution_providers(eps)?;
+            .with_optimization_level(map_opt_level(opt))
+            .map_err(ort::Error::<()>::from)?
+            .with_execution_providers(eps)
+            .map_err(ort::Error::<()>::from)?;
         if let Some(arena) = &shared_arena {
             register_shared_arena(arena)?;
-            builder = builder.with_env_allocators()?;
+            builder = builder.with_env_allocators().map_err(ort::Error::<()>::from)?;
         }
         Ok(builder.commit_from_file(model_path)?)
     });
@@ -277,13 +299,14 @@ pub fn run(
     inputs: Vec<ResourceArc<OrtexTensor>>,
 ) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, BoxError> {
     let outputs = model.with_session(|session| -> Result<Vec<OrtexTensor>, BoxError> {
+        check_input_count(session, inputs.len())?;
         // Bool-converted temporaries must outlive ortified_inputs since inputs borrow from them.
         let bool_converted: Vec<OrtexTensor> = inputs
             .iter()
             .zip(session.inputs())
             .filter_map(|(elixir_input, onnx_input)| {
                 if is_bool_input(onnx_input.dtype()) {
-                    Some((&**elixir_input).clone().to_bool())
+                    Some(elixir_input.to_bool())
                 } else {
                     None
                 }
@@ -304,21 +327,7 @@ pub fn run(
         }
 
         let outputs = session.run(&ortified_inputs[..])?;
-        let mut collected_outputs = Vec::new();
-
-        for output_name in outputs.keys() {
-            let val = outputs.get(output_name).expect(
-                &format!(
-                    "Expected {} to be in the outputs, but didn't find it",
-                    output_name
-                )[..],
-            );
-
-            let ortextensor: OrtexTensor = val.try_into()?;
-            collected_outputs.push(ortextensor);
-        }
-
-        Ok(collected_outputs)
+        collect_outputs(&outputs)
     })??;
 
     Ok(pack(outputs))
@@ -329,25 +338,41 @@ pub fn run_binary<'a>(
     inputs: &[(Binary<'a>, Vec<usize>, String, usize)],
 ) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, BoxError> {
     let outputs = model.with_session(|session| -> Result<Vec<OrtexTensor>, BoxError> {
+        check_input_count(session, inputs.len())?;
         let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
         for ((bin, shape, dtype_str, dtype_bits), onnx_input) in inputs.iter().zip(session.inputs()) {
-            let n: usize = shape.iter().product();
-            let ptr = bin.as_ptr();
+            let bytes = bin.as_slice();
 
             if is_bool_input(onnx_input.dtype()) {
-                let u8_slice = unsafe { std::slice::from_raw_parts(ptr, n) };
-                let bool_vec: Vec<bool> = u8_slice.iter().map(|&x| x != 0).collect();
-                let arr = Array::from_shape_vec(IxDyn(shape.as_slice()), bool_vec)?;
+                let arr = copy_from_binary::<u8>(bytes, shape)?.mapv(|x| x != 0);
                 ortified_inputs.push(ort::value::Value::from_array(arr)?.into());
                 continue;
             }
 
+            // Without a copy when the binary is aligned for the type, else (e.g. a sub-binary) copied.
+            // copy_from_binary checks the binary is long enough for the shape.
             macro_rules! make_input {
                 ($t:ty) => {{
-                    let slice: &[$t] = unsafe { std::slice::from_raw_parts(ptr as *const $t, n) };
-                    let arr = ArrayView::<$t, IxDyn>::from_shape(IxDyn(shape.as_slice()), slice)?;
-                    TensorRef::<$t>::from_array_view(arr)?.into()
+                    if bytes.as_ptr() as usize % std::mem::align_of::<$t>() == 0 {
+                        let n: usize = shape.iter().product();
+                        if bytes.len() < n * std::mem::size_of::<$t>() {
+                            return Err(format!(
+                                "binary has {} bytes, but shape {:?} needs {}",
+                                bytes.len(),
+                                shape,
+                                n * std::mem::size_of::<$t>()
+                            )
+                            .into());
+                        }
+                        // Safety: aligned, and long enough (checked above)
+                        let slice: &[$t] = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const $t, n) };
+                        let arr = ArrayView::<$t, IxDyn>::from_shape(IxDyn(shape.as_slice()), slice)?;
+                        TensorRef::<$t>::from_array_view(arr)?.into()
+                    } else {
+                        let arr = copy_from_binary::<$t>(bytes, shape)?;
+                        ort::value::Value::from_array(arr)?.into()
+                    }
                 }};
             }
 
@@ -370,15 +395,7 @@ pub fn run_binary<'a>(
         }
 
         let outputs = session.run(&ortified_inputs[..])?;
-
-        let mut collected_outputs = Vec::new();
-        for output_name in outputs.keys() {
-            let val = outputs.get(output_name).expect("output key missing");
-            let ortextensor: OrtexTensor = val.try_into()?;
-            collected_outputs.push(ortextensor);
-        }
-
-        Ok(collected_outputs)
+        collect_outputs(&outputs)
     })??;
 
     Ok(pack(outputs))
@@ -389,6 +406,7 @@ pub fn run_cuda(
     inputs: &[(u64, Vec<i64>, String, usize, i32)],
 ) -> Result<Vec<(ResourceArc<OrtexTensor>, Vec<usize>, Atom, usize)>, BoxError> {
     let outputs = model.with_session(|session| -> Result<Vec<OrtexTensor>, BoxError> {
+        check_input_count(session, inputs.len())?;
         let mut ortified_inputs: Vec<ort::session::SessionInputValue<'_>> = Vec::new();
 
         for (ptr, shape, dtype_str, dtype_bits, device_index) in inputs.iter() {
@@ -412,15 +430,7 @@ pub fn run_cuda(
         }
 
         let outputs = session.run(&ortified_inputs[..])?;
-
-        let mut collected_outputs = Vec::new();
-        for output_name in outputs.keys() {
-            let val = outputs.get(output_name).expect("output key missing");
-            let ortextensor: OrtexTensor = val.try_into()?;
-            collected_outputs.push(ortextensor);
-        }
-
-        Ok(collected_outputs)
+        collect_outputs(&outputs)
     })??;
 
     Ok(pack(outputs))
@@ -450,6 +460,7 @@ pub fn run_cuda_pinned(
             ),
             BoxError,
         > {
+            check_input_count(session, inputs.len())?;
             let mut binding = session.create_binding()?;
 
             for ((ptr, shape, dtype_str, dtype_bits, device_index), onnx_input) in

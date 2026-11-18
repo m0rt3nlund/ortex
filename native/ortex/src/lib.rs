@@ -9,7 +9,6 @@ mod tensor;
 mod utils;
 
 use model::OrtexModel;
-use rustler::Resource;
 use tensor::OrtexTensor;
 
 use rustler::types::Binary;
@@ -112,7 +111,7 @@ fn to_binary<'a>(
     utils::to_binary(env, reference, bits, limit)
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 pub fn slice<'a>(
     tensor: ResourceArc<OrtexTensor>,
     start_indicies: Vec<isize>,
@@ -126,7 +125,7 @@ pub fn slice<'a>(
     )))
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 pub fn reshape<'a>(
     tensor: ResourceArc<OrtexTensor>,
     shape: Vec<usize>,
@@ -134,7 +133,7 @@ pub fn reshape<'a>(
     Ok(ResourceArc::new(tensor.reshape(shape)?))
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 pub fn concatenate<'a>(
     tensors: Vec<ResourceArc<OrtexTensor>>,
     dtype: Term,
@@ -142,7 +141,8 @@ pub fn concatenate<'a>(
 ) -> NifResult<ResourceArc<OrtexTensor>> {
     let (dtype_t, dtype_bits): (Term, usize) = dtype.decode()?;
     let dtype_str = dtype_t.atom_to_string()?;
-    let concatted = tensor::concatenate(tensors, (&dtype_str, dtype_bits), axis as usize);
+    let concatted = tensor::concatenate(tensors, (&dtype_str, dtype_bits), axis as usize)
+        .map_err(|e| rustler::Error::Term(Box::new(e)))?;
     Ok(ResourceArc::new(concatted))
 }
 
@@ -172,7 +172,8 @@ fn pin_nvrtc() {
 fn pin_nvrtc() {}
 
 pub fn on_load(env: Env) -> bool {
-    tracing_subscriber::fmt::init();
+    // try_init: a subscriber may already be set (e.g. the NIF loaded again)
+    let _ = tracing_subscriber::fmt::try_init();
 
     pin_nvrtc();
 

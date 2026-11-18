@@ -15,24 +15,18 @@ resolver = "2"
 [dependencies]
 half = "2.7.1"
 ndarray = "0.17"
-num-traits = "0.2.19"
-ort = {version = "2.0.0-rc.15", features = [
-  "half",
-  "cuda",
-  "directml",
-  "tensorrt",
-]}
 ort-sys = {version = "=2.0.0-rc.15", default-features = false}
-rustler = "0.37"
-rustls = "0.23.34"
-tracing-subscriber = {version = "0.3", features = ["env-filter", "fmt"]}
+rustler = "0.38"
+tracing-subscriber = {version = "0.3.20", features = ["env-filter", "fmt"]}
 
+# ort only per platform: features of every matching entry are merged, so a general entry here would turn the default
+# features (and DirectML) back on outside Windows.
 # DirectML doesn't exist outside Windows
 [target.'cfg(windows)'.dependencies]
-ort = {version = "2.0.0-rc.13", features = ["half", "cuda", "directml", "tensorrt"]}
+ort = {version = "2.0.0-rc.15", features = ["half", "cuda", "directml", "tensorrt"]}
 
 [target.'cfg(not(windows))'.dependencies]
-ort = {version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "half", "cuda", "tensorrt", "load-dynamic", "api-23"]}
+ort = {version = "2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "tracing", "half", "cuda", "tensorrt", "load-dynamic", "api-23"]}
 
 # [profile.dev]
 # debug = true # Enables full DWARF/PDB symbols (default on most platforms)

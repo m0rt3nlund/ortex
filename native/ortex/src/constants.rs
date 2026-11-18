@@ -1,10 +1,15 @@
 pub const CUDA: &str = "cuda";
 pub const CPU: &str = "cpu";
 pub const TENSORRT: &str = "tensorrt";
+#[cfg(feature = "acl")]
 pub const ACL: &str = "acl";
+#[cfg(feature = "onednn")]
 pub const ONEDNN: &str = "onednn";
+#[cfg(feature = "coreml")]
 pub const COREML: &str = "coreml";
+#[cfg(windows)]
 pub const DIRECTML: &str = "directml";
+#[cfg(feature = "rocm")]
 pub const ROCM: &str = "rocm";
 
 pub mod ortex_atoms {

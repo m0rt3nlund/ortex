@@ -63,9 +63,9 @@ defmodule Ortex.Backend do
     backend.from_binary(tensor, to_binary(tensor), opts)
   end
 
-  defp to_binary(%T{data: %{ref: tensor}}) do
-    # filling the bits and limits with 0 since we aren't using them right now
-    Ortex.Native.to_binary(tensor, 0, 0)
+  defp to_binary(%T{data: %{ref: tensor}} = t) do
+    # bits is unused; limit is the number of elements to return, here all of them
+    Ortex.Native.to_binary(tensor, 0, Nx.size(t))
   end
 
   @impl true
