@@ -154,9 +154,10 @@ impl SharedArena {
 /// ONNX Runtime's environment, one per process (ort allows no more): every session is made with it
 static ENVIRONMENT: OnceLock<Result<ort::environment::Environment, String>> = OnceLock::new();
 
-/// Makes the environment, when the NIF is loaded (`on_load`), or else the first time it is needed
+/// Makes the environment, when the NIF is loaded (`on_load`), or else the first time it is needed. Without telemetry:
+/// ort turns it on by default, which in Microsoft's builds sends model and usage data
 pub fn environment() -> Result<&'static ort::environment::Environment, BoxError> {
-    match ENVIRONMENT.get_or_init(|| ort::init().build().map_err(|e| e.to_string())) {
+    match ENVIRONMENT.get_or_init(|| ort::init().with_telemetry(false).build().map_err(|e| e.to_string())) {
         Ok(environment) => Ok(environment),
         Err(message) => Err(format!("no ONNX Runtime environment: {message}").into()),
     }
